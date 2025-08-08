@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>南门餐铺 2D版</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Microsoft YaHei', sans-serif;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #gameContainer {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background: transparent;
+            overflow: hidden;
+        }
+        
+        #gameCanvas {
+            display: block;
+            background: transparent;
+            border: none;
+            width: 100vw;
+            height: 100vh;
+            margin: 0;
+            position: relative;
+            /* 像素完美渲染 - 保持像素风格图片的清晰度 */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        
+        #ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 500;
+        }
+        
+        .ui-element {
+            pointer-events: auto;
+            z-index: 101;
+        }
+        
+        #gameInfo {
+            position: absolute;
+            top: 200px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 20px;
+            border-radius: 15px;
+            font-size: 16px;
+            width: 280px;
+            z-index: 500;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+
+        
+        .order-item {
+            background: rgba(255, 255, 255, 0.1);
+            margin: 6px 0;
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 13px;
+            border-left: 4px solid #4CAF50;
+            line-height: 1.4;
+            position: relative;
+            pointer-events: auto !important;
+        }
+        
+        .order-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+        }
+        
+        .order-info {
+            flex: 1;
+            margin-right: 8px;
+        }
+        
+        .order-header {
+            font-weight: bold;
+            color: #FFF;
+            margin-bottom: 4px;
+        }
+        
+        .order-items {
+            color: #DDD;
+            line-height: 1.3;
+        }
+        
+        .fulfill-btn-square {
+            width: 40px;
+            height: 40px;
+            background: #4CAF50;
+            border: none;
+            border-radius: 6px;
+            color: white;
+            font-size: 10px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto !important;
+            z-index: 1000 !important;
+            position: relative !important;
+            outline: 2px solid transparent;
+        }
+        
+        .fulfill-btn-square:hover {
+            background: #45a049 !important;
+            transform: scale(1.05) !important;
+            outline: 2px solid #FFD700 !important;
+        }
+        
+        .fulfill-btn-square:active {
+            transform: scale(0.98) !important;
+            background: #2E7D32 !important;
+        }
+        
+        .fulfill-btn-square:focus {
+            outline: 2px solid #FFD700 !important;
+        }
+        
+        .urgent {
+            border-left: 5px solid #ff4444;
+            animation: urgentPulse 1s infinite;
+        }
+
+        @keyframes urgentPulse {
+            0%, 100% { background: rgba(255, 68, 68, 0.1); }
+            50% { background: rgba(255, 68, 68, 0.2); }
+        }
+        
+        #gameControls {
+            position: absolute;
+            bottom: -25px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 12px;
+            z-index: 200;
+            pointer-events: auto;
+        }
+        
+        /* 上层游戏控制栏 - 放在视图控制栏上面 */
+        #topGameControls {
+            position: absolute;
+            bottom: auto; /* 由JS改为绝对定位到屏幕中心 */
+            left: 50%;
+            transform: translate(-50%, 0);
+            display: flex;
+            gap: 12px;
+            z-index: 200;
+            pointer-events: auto;
+        }
+        
+        .control-btn {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+            transition: all 0.3s;
+            pointer-events: auto;
+            z-index: 201;
+            min-width: 90px;
+            height: 40px;
+            box-shadow: 0 3px 10px rgba(76, 175, 80, 0.3);
+        }
+
+        /* 像素完美渲染：开始营业按钮 */
+        #startDay.control-btn {
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        .control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4);
+        }
+
+        .control-btn:disabled {
+            background: linear-gradient(135deg, #666, #555);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        #eventNotification {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: transparent;
+            color: #333;
+            padding: 15px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            display: none;
+            z-index: 200;
+            text-align: center;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+        /* 提示框颜色：白/黄/红 */
+        #eventNotification.notif-white {
+            background: rgba(255, 255, 255, 0.95);
+            color: #333;
+        }
+        #eventNotification.notif-yellow {
+            background: rgba(255, 235, 59, 0.95); /* 物料黄 */
+            color: #333;
+        }
+        #eventNotification.notif-red {
+            background: rgba(244, 67, 54, 0.95); /* 警告红 */
+            color: #fff;
+        }
+        
+
+        
+        /* 底部视图控制栏 - 放在front图像内的浅色区域，向上移动一点点 */
+        #viewControls {
+            position: absolute;
+            bottom: 2.85%;
+            left: 48%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: row;
+            gap: 15px;
+            z-index: 150;
+            background: transparent;
+            padding: 0;
+            border: none;
+            backdrop-filter: none;
+            box-shadow: none;
+        }
+        
+        .view-btn {
+            background: none;
+            background-size: contain;
+            background-position: center;
+            background-repeat: no-repeat;
+            color: transparent;
+            border: none;
+            border-radius: 0;
+            cursor: pointer;
+            font-size: 0;
+            transition: all 0.2s;
+            box-shadow: none;
+            /* 41:17比例按钮放大，完美像素渲染 */
+            width: 180px;
+            height: 75px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+            backdrop-filter: brightness(1);
+            /* 像素完美渲染 */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        
+        .view-btn:hover {
+            transform: translateY(-2px) scale(1.02);
+            backdrop-filter: brightness(1.1) contrast(1.05);
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+        }
+        
+        .view-btn.active {
+            transform: translateY(-1px) scale(1.01);
+            backdrop-filter: brightness(1.2) contrast(1.1);
+            filter: drop-shadow(0 3px 6px rgba(255, 215, 0, 0.4));
+        }
+
+        /* 为每个按钮设置对应的背景图片 */
+        #viewMain {
+            background-image: url('images/dating.png');
+        }
+
+        #viewYoutiao {
+            background-image: url('images/youtiao.png');
+        }
+
+        #viewDoujiang {
+            background-image: url('images/doujiang.png');
+        }
+
+        #viewCongee {
+            background-image: url('images/zhoucai.png');
+        }
+        
+        /* 按钮光效 - 像素完美适配 */
+        .view-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255, 255, 255, 0.3),
+                transparent
+            );
+            transition: left 0.4s ease-out;
+            z-index: 1;
+            /* 像素完美渲染 */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        .view-btn:hover::before {
+            left: 100%;
+        }
+        
+        /* 隐藏按钮文字 */
+        .view-btn {
+            z-index: 2;
+        }
+        
+        .view-btn span {
+            display: none;
+            visibility: hidden;
+            opacity: 0;
+        }
+        
+        #actionButtons {
+            position: absolute;
+            right: 20px;
+            bottom: 170px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            z-index: 500;
+        }
+        
+        .action-btn {
+            background: linear-gradient(135deg, #FF6B6B, #FF5252);
+            color: white;
+            border: none;
+            padding: 15px 20px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            min-width: 150px;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(255, 107, 107, 0.3);
+            pointer-events: auto;
+            z-index: 500;
+            position: relative;
+        }
+        
+        .action-btn:hover {
+            background: linear-gradient(135deg, #FF5252, #F44336);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255, 107, 107, 0.4);
+        }
+        
+        .action-btn:disabled {
+            background: linear-gradient(135deg, #666, #555);
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* 教程模态框样式 */
+        .modal {
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(5px);
+        }
+
+        .modal-content {
+            background-color: #2c3e50;
+            margin: 5% auto;
+            padding: 0;
+            border-radius: 15px;
+            width: 80%;
+            max-width: 700px;
+            color: #ecf0f1;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            animation: modalSlideIn 0.3s ease-out;
+        }
+
+        @keyframes modalSlideIn {
+            from { transform: translateY(-100px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .modal-header {
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            padding: 20px;
+            border-radius: 15px 15px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 24px;
+        }
+
+        .close-btn {
+            font-size: 30px;
+            cursor: pointer;
+            color: #ecf0f1;
+            transition: color 0.3s;
+        }
+
+        .close-btn:hover {
+            color: #f39c12;
+        }
+
+        .modal-body {
+            padding: 30px;
+        }
+
+        #tutorialContent {
+            min-height: 300px;
+            font-size: 16px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+
+        .tutorial-step {
+            display: none;
+        }
+
+        .tutorial-step.active {
+            display: block;
+        }
+
+        .tutorial-step h3 {
+            color: #3498db;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+
+        .tutorial-step img {
+            max-width: 100%;
+            border-radius: 10px;
+            margin: 15px 0;
+        }
+
+        .tutorial-highlight {
+            background: rgba(52, 152, 219, 0.2);
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #3498db;
+            margin: 15px 0;
+        }
+
+        .tutorial-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid #34495e;
+            padding-top: 20px;
+        }
+
+        .tutorial-btn {
+            background: linear-gradient(135deg, #3498db, #2980b9);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .tutorial-btn:hover:not(:disabled) {
+            background: linear-gradient(135deg, #2980b9, #21618c);
+            transform: translateY(-2px);
+        }
+
+        .tutorial-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #stepIndicator {
+            font-weight: bold;
+            color: #3498db;
+        }
+
+        /* 主要UI容器 - 位于页面右边界和background1右边界中心 */
+        #mainUI {
+            position: absolute;
+            top: 5%;
+            right: 4%;
+            width: 288px;
+            height: 95%;
+            background: transparent;
+            backdrop-filter: none;
+            border: none;
+            z-index: 500;
+            overflow-y: visible;
+            padding: 0;
+            box-sizing: border-box;
+            font-size: 12px;
+        }
+
+        /* 成品槽样式 - kuang3图片背景 (顶部) */
+        #foodSlots {
+            background: url('images/kuang3.png') no-repeat center;
+            background-size: 100% 100%;
+            padding: 0;
+            border-radius: 0;
+            color: white;
+            margin-bottom: 0;
+            border: none;
+            height: 202px;
+            width: 288px;
+            position: absolute;
+            top: 0;
+            left: 50px;
+            /* 像素完美渲染 */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        
+        #foodSlots h4 {
+            margin: 12px 16px 8px 16px;
+            font-size: 16px;
+            font-weight: bold;
+            color: #FFD700;
+        }
+        
+        /* 订单面板 - kuang1图片背景 (底部) */
+        #orderPanel {
+            background: url('images/kuang1.png') no-repeat center;
+            background-size: 100% 100%;
+            padding: 0;
+            border-radius: 0;
+            color: white;
+            margin-bottom: 0;
+            border: none;
+            font-size: 11px;
+            width: 288px;
+            height: 507px; /* 88:50比例，288 × (88/50) = 507px */
+            position: absolute;
+            top: 559px; /* kuang3高度(202px) + kuang2高度(317px) + 2个间距(40px) */
+            left: 50px;
+            overflow: hidden;
+            /* 像素完美渲染 */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        
+        /* 其他UI元素透明化 */
+        .ui-element {
+            background: transparent;
+            padding: 0;
+            margin: 8px;
+            border-radius: 0;
+            color: white;
+            border: none;
+            font-size: 11px;
+        }
+        
+        .ui-element h4 {
+            margin: 8px 8px 6px 8px;
+            font-size: 11px;
+            font-weight: bold;
+            color: #FFD700;
+        }
+
+        /* 内容区域边距设置 - 已整合到主样式中 */
+
+        #orderList {
+            margin: 16px;
+            font-size: 14px;
+            width: 250px;
+            max-height: 641px;
+            height: 641px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            box-sizing: border-box;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+            touch-action: pan-y;
+            position: relative;
+            z-index: 1;
+            pointer-events: auto !important;
+        }
+
+        /* 滚动条样式优化 */
+        #orderList::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        #orderList::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        #orderList::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+        }
+
+        #orderList::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.5);
+        }
+
+        /* 功能区域精确对齐kuang框架 */
+        .food-icon {
+            font-size: 28px;
+            margin-bottom: 4px;
+        }
+
+        .food-name {
+            font-size: 12px;
+            text-align: center;
+            font-weight: bold;
+            color: white;
+            line-height: 1.2;
+        }
+
+        .plate-base {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+            text-align: center;
+            pointer-events: none;
+            line-height: 1.3;
+        }
+
+        #plateItems {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+        }
+
+        .plate-item {
+            position: absolute;
+            font-size: 24px;
+            transition: all 0.3s;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+
+        #plateArea h4 {
+            margin: 16px 20px 12px 20px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #FFD700;
+        }
+
+        #orderPanel h4 {
+            margin: 20px 24px 16px 24px;
+            font-size: 20px;
+            font-weight: bold;
+            color: #FFD700;
+        }
+
+        #completedFoodSlots {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            min-height: 140px;
+            max-height: 140px;
+            width: 250px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 12px;
+            border: 2px dashed rgba(255, 255, 255, 0.3);
+            overflow-y: auto;
+            box-sizing: border-box;
+            touch-action: pan-y;
+        }
+
+        .food-slot {
+            width: 70px;
+            height: 70px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+            user-select: none;
+            -webkit-user-select: none;
+            z-index: 10;
+        }
+
+        .food-slot:hover {
+            background: rgba(255, 255, 255, 0.4);
+            border-color: #4CAF50;
+            transform: translateY(-3px);
+            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.3);
+        }
+        
+        .food-slot:active {
+            transform: translateY(-1px);
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .food-slot.dragging {
+            opacity: 0.8;
+            transform: rotate(3deg) scale(1.15);
+            cursor: grabbing;
+            z-index: 9999;
+            pointer-events: none;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+            border: 2px solid #FFD700;
+        }
+
+        .food-icon {
+            font-size: 24px;
+            margin-bottom: 2px;
+        }
+
+        .food-name {
+            font-size: 9px;
+            text-align: center;
+            font-weight: bold;
+            color: white;
+            line-height: 1;
+        }
+
+        #plateArea {
+            background: url('images/kuang2.png') no-repeat center;
+            background-size: 100% 100%;
+            padding: 0;
+            border-radius: 0;
+            color: white;
+            margin-bottom: 0;
+            border: none;
+            height: 317px;
+            width: 288px;
+            position: absolute;
+            top: 222px; /* kuang3高度(202px) + 间距(20px) */
+            left: 50px;
+            /* 像素完美渲染 */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        #currentPlate {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 50%;
+            width: 200px;
+            height: 200px;
+            margin: 16px auto 20px;
+            position: relative;
+            border: 5px solid #8B4513;
+            box-shadow: inset 0 4px 16px rgba(0, 0, 0, 0.3);
+            touch-action: manipulation;
+            cursor: grab;
+            user-select: none;
+            -webkit-user-select: none;
+            z-index: 20;
+        }
+
+        .plate-base {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 10px;
+            text-align: center;
+            pointer-events: none;
+            line-height: 1.2;
+        }
+
+        #plateItems {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+        }
+
+        .plate-item {
+            position: absolute;
+            font-size: 16px;
+            transition: all 0.3s;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+            touch-action: manipulation;
+        }
+
+        .plate-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin: 12px 16px 16px 16px;
+            width: 250px;
+            box-sizing: border-box;
+        }
+
+        .plate-actions .action-btn {
+            padding: 8px 12px;
+            font-size: 12px;
+            flex: 1;
+            height: 36px;
+            border-radius: 6px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            pointer-events: auto;
+            z-index: 500;
+            position: relative;
+        }
+
+        .drop-zone {
+            border: 3px dashed #4CAF50 !important;
+            background: rgba(76, 175, 80, 0.2) !important;
+            box-shadow: 0 0 20px rgba(76, 175, 80, 0.4) !important;
+        }
+
+        .quality-indicator {
+            position: absolute;
+            top: -6px;
+            right: -6px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 8px;
+            font-weight: bold;
+            color: white;
+            border: 1px solid white;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+        }
+
+        .quality-perfect { background: #4CAF50; color: white; }
+        .quality-good { background: #FFC107; color: black; }
+        .quality-normal { background: #FF9800; color: white; }
+        .quality-poor { background: #F44336; color: white; }
+
+        /* 开始界面样式 */
+        .start-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 9999;
+            background: url('images/zhuye.png') no-repeat center center;
+            background-size: 100% 100%;
+            animation: fadeIn 1s ease-in;
+            /* 像素完美渲染 */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+
+
+        .loading-section {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            margin: 0;
+            transition: opacity 0.5s ease;
+            text-align: center;
+            min-width: 400px;
+        }
+
+        .loading-text {
+            font-size: 1.2rem;
+            margin-bottom: 20px;
+            opacity: 0.8;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+        }
+
+        .loading-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+
+        .loading-progress {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A, #CDDC39);
+            border-radius: 4px;
+            width: 0%;
+            transition: width 0.5s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .loading-progress::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255, 255, 255, 0.4),
+                transparent
+            );
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .loading-tips {
+            font-size: 0.9rem;
+            opacity: 0.7;
+            font-style: italic;
+            min-height: 20px;
+            transition: opacity 0.3s ease;
+            color: white;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        .start-buttons {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+            align-items: center;
+            transition: opacity 0.5s ease;
+        }
+
+        .start-btn {
+            padding: 15px 30px;
+            font-size: 1.1rem;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+            min-width: 150px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .start-btn.primary {
+            background: url('images/kaishi.png') no-repeat center center;
+            background-size: contain;
+            color: transparent;
+            /* 像素完美渲染 */
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-crisp-edges;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            /* 进一步放大按钮尺寸 */
+            min-width: 400px;
+            min-height: 160px;
+            /* 去掉椭圆透明样式 */
+            border-radius: 0;
+            padding: 0;
+            box-shadow: none;
+            border: none;
+        }
+
+        .start-btn.icon {
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+            color: transparent;
+            background-color: transparent;
+            image-rendering: pixelated;
+            min-width: 220px;
+            min-height: 88px;
+            border: none;
+            border-radius: 0;
+            box-shadow: none;
+            padding: 0;
+            outline: none;
+        }
+
+        /* 为每个按钮设置对应的背景图片 */
+        #shezhiBtn { background-image: url('images/shezhi.png'); }
+        #shuomingBtn {
+            background-image: url('images/shuoming.png');
+            /* 放大到与kaishi按钮一致的尺寸 */
+            min-width: 400px;
+            min-height: 160px;
+        }
+
+        /* 覆盖icon按钮的悬停/按下效果，保持透明与静止 */
+        .start-btn.icon:hover,
+        .start-btn.icon:active,
+        .start-btn.icon:focus {
+            transform: none;
+            box-shadow: none;
+            outline: none;
+            background-color: transparent;
+        }
+
+        .start-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .start-btn:active {
+            transform: translateY(0);
+        }
+
+        .start-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255, 255, 255, 0.2),
+                transparent
+            );
+            transition: left 0.5s;
+        }
+
+        .start-btn:hover::before {
+            left: 100%;
+        }
+
+
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        /* 隐藏开始界面的动画 */
+        .start-screen.fade-out {
+            animation: fadeOut 0.8s ease-out forwards;
+        }
+
+        @keyframes fadeOut {
+            to { 
+                opacity: 0; 
+                transform: scale(1.1);
+                visibility: hidden;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 游戏开始界面 -->
+    <div id="startScreen" class="start-screen">
+        <div class="loading-section" id="loadingSection">
+            <div class="loading-text">游戏加载中...</div>
+            <div class="loading-bar">
+                <div class="loading-progress" id="loadingProgress"></div>
+            </div>
+            <div class="loading-tips" id="loadingTips">
+                正在准备新鲜的食材...
+            </div>
+        </div>
+        
+        <div class="start-buttons" id="startButtons" style="display: none;">
+            <button class="start-btn primary" id="startGameBtn"></button>
+            <button class="start-btn icon" id="shezhiBtn"></button>
+            <button class="start-btn icon" id="shuomingBtn"></button>
+        </div>
+    </div>
+
+    <div id="gameContainer" style="display: none;">
+        <canvas id="gameCanvas" width="1920" height="1080"></canvas>
+
+        <div id="ui">
+            <!-- 右侧主UI面板（开始前也显示，但不可交互） -->
+            <div id="mainUI">
+                <!-- 成品槽区域 - kuang3 (顶部) -->
+                <div id="foodSlots">
+                    <h4>🍳 完成的食物</h4>
+                    <div id="completedFoodSlots">
+                        <!-- 动态生成成品槽 -->
+                    </div>
+                </div>
+
+                <!-- 餐盘区域 - kuang2 (中间) -->
+                <div id="plateArea">
+                    <h4>🍽️ 餐盘配菜</h4>
+                    <div id="currentPlate">
+                        <div class="plate-base">点击完成的食物放入餐盘<br/>点击订单交餐按钮提交</div>
+                        <div id="plateItems"></div>
+                    </div>
+                    <div class="plate-actions">
+                        <button id="servePlate" class="action-btn">查看餐盘 (点击订单交餐按钮提交)</button>
+                        <button id="clearPlate" class="action-btn">清空餐盘</button>
+                    </div>
+                </div>
+                
+                <!-- 订单面板 - kuang1 (底部) -->
+                <div id="orderPanel" style="display: block !important; visibility: visible !important;">
+                    <h4>📋 待处理订单</h4>
+                    <div id="orderList" style="display: block !important; visibility: visible !important; min-height: 50px; border: 1px solid #444;"></div>
+                </div>
+            </div>
+            
+                <!-- 游戏信息（开始前也显示） -->
+                <div id="gameInfo" class="ui-element">
+                    <h4>📊 游戏状态</h4>
+                    <div><strong>💰 金钱:</strong> ¥<span id="money">100</span></div>
+                    <div><strong>⭐ 声誉:</strong> <span id="reputation">50</span></div>
+                    <div><strong>🏪 店铺等级:</strong> <span id="shopLevel">普通店</span></div>
+                    <div><strong>🌅 时间:</strong> <span id="timePhase">早晨</span></div>
+                    <div><strong>📅 天数:</strong> 第<span id="dayCount">1</span>天</div>
+                    <div><strong>👥 顾客:</strong> <span id="customerCount">0</span></div>
+                    <div><strong>⏱️ 剩余:</strong> <span id="timeLeft">120</span>秒</div>
+                </div>
+            
+
+            
+
+            
+            <div id="actionButtons" class="ui-element">
+            </div>
+            
+
+            
+            <!-- 上层游戏控制栏 -->
+            <div id="topGameControls" class="ui-element">
+                <button class="control-btn" id="startDay" onclick="startDay()">🌅 开始营业</button>
+            </div>
+            
+            <div id="gameControls" class="ui-element">
+            </div>
+            
+                    <div id="eventNotification"></div>
+        </div>
+
+        <!-- 底部视图控制栏 - 放在front图像内的浅色区域，像素完美按钮 -->
+            <div id="viewControls">
+            <button class="view-btn active" id="viewMain" onclick="if(window.game) window.game.switchView('main')">
+                <span>大厅</span>
+            </button>
+            <button class="view-btn" id="viewYoutiao" data-food-type="youtiao" onclick="if(window.game) window.game.switchAndStartCooking('youtiao')">
+                <span>油条制作</span>
+            </button>
+            <button class="view-btn" id="viewDoujiang" data-food-type="doujiang" onclick="if(window.game) window.game.switchAndStartCooking('doujiang')">
+                <span>豆浆制作</span>
+            </button>
+            <button class="view-btn" id="viewCongee" data-food-type="congee" onclick="if(window.game) window.game.switchAndStartCooking('congee')">
+                <span>粥制作</span>
+            </button>
+        </div>
+    </div>
+
+    
+    </div>
+    
+    <script>
+        // 开始界面管理
+        class StartScreen {
+            constructor() {
+                this.loadingProgress = 0;
+                this.loadingTips = [
+                    '正在准备新鲜的食材...',
+                    '清洗厨房设备...',
+                    '调试油锅温度...',
+                    '准备豆浆机...',
+                    '布置餐桌...',
+                    '等待顾客到来...'
+                ];
+                this.currentTipIndex = 0;
+                this.init();
+            }
+
+            init() {
+                this.startLoading();
+                this.bindEvents();
+            }
+
+            startLoading() {
+                const progressBar = document.getElementById('loadingProgress');
+                const loadingTips = document.getElementById('loadingTips');
+                
+                const loadingInterval = setInterval(() => {
+                    this.loadingProgress += Math.random() * 15 + 5;
+                    
+                    if (this.loadingProgress >= 100) {
+                        this.loadingProgress = 100;
+                        clearInterval(loadingInterval);
+                        clearInterval(tipInterval);
+                        this.showStartButtons();
+                    }
+                    
+                    progressBar.style.width = `${this.loadingProgress}%`;
+                }, 200);
+
+                const tipInterval = setInterval(() => {
+                    this.currentTipIndex = (this.currentTipIndex + 1) % this.loadingTips.length;
+                    loadingTips.textContent = this.loadingTips[this.currentTipIndex];
+                    loadingTips.style.opacity = '0';
+                    setTimeout(() => {
+                        loadingTips.style.opacity = '0.7';
+                    }, 100);
+                }, 1000);
+            }
+
+            showStartButtons() {
+                const loadingSection = document.getElementById('loadingSection');
+                const startButtons = document.getElementById('startButtons');
+                
+                setTimeout(() => {
+                    loadingSection.style.opacity = '0';
+                    setTimeout(() => {
+                        loadingSection.style.display = 'none';
+                        startButtons.style.display = 'flex';
+                        startButtons.style.opacity = '0';
+                        setTimeout(() => {
+                            startButtons.style.opacity = '1';
+                        }, 100);
+                    }, 500);
+                }, 1000);
+            }
+
+            bindEvents() {
+                const startGameBtn = document.getElementById('startGameBtn');
+                const shezhiBtn = document.getElementById('shezhiBtn');
+                const shuomingBtn = document.getElementById('shuomingBtn');
+
+                startGameBtn.addEventListener('click', () => {
+                    this.startGame();
+                });
+
+                // 设置按钮：进入游戏后打开设置（如果有）
+                shezhiBtn.addEventListener('click', () => {
+                    this.startGame();
+                    setTimeout(() => {
+                        if (window.game && window.game.openSettings) {
+                            window.game.openSettings();
+                        } else if (window.game && window.game.showNotification) {
+                            window.game.showNotification('设置界面开发中...');
+                        }
+                    }, 800);
+                });
+
+                // 说明按钮：进入游戏后显示说明占位（已移除教程）
+                shuomingBtn.addEventListener('click', () => {
+                    this.startGame();
+                    setTimeout(() => {
+                        if (window.game && window.game.showNotification) {
+                            window.game.showNotification('说明界面开发中...');
+                        }
+                    }, 800);
+                });
+            }
+
+            startGame() {
+                const startScreen = document.getElementById('startScreen');
+                const gameContainer = document.getElementById('gameContainer');
+                
+                // 淡出开始界面
+                startScreen.classList.add('fade-out');
+                
+                setTimeout(() => {
+                    startScreen.style.display = 'none';
+                    gameContainer.style.display = 'block';
+                    
+                    // 初始化游戏
+                    this.initializeGame();
+                }, 800);
+            }
+
+            initializeGame() {
+                try {
+                    // 确保游戏加载完成
+                    if (typeof BreakfastShop2D !== 'undefined') {
+                        window.game = new BreakfastShop2D();
+                        console.log('游戏初始化成功');
+                    } else {
+                        console.error('游戏类未找到，延迟重试...');
+                        setTimeout(() => {
+                            this.initializeGame();
+                        }, 500);
+                    }
+                } catch (error) {
+                    console.error('游戏初始化错误:', error);
+                }
+            }
+        }
+
+        // 页面加载完成后启动开始界面
+        document.addEventListener('DOMContentLoaded', () => {
+            new StartScreen();
+        });
+
+        // 游戏控制函数
+        function startDay() {
+            if (window.game) {
+                window.game.startDay();
+            } else {
+                alert('游戏未加载完成，请刷新页面重试');
+            }
+        }
+
+        // 强制重新绑定UI事件（调试用）
+        function rebindUIEvents() {
+            console.log('🔧 重新绑定UI事件（已禁用）');
+            // 功能已移至游戏内部处理，避免bindUIEvents未定义错误
+        }
+
+        // 🎯 移除调试函数，按钮事件现在由侧边栏系统统一管理
+
+        // 彻底修复拖动和滚动问题
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🔧 初始化拖动和滚动修复');
+            
+            // 防止整体页面滚动，但允许指定区域滚动
+            document.body.addEventListener('touchmove', (e) => {
+                const isScrollableArea = e.target.closest('#orderList') || 
+                                       e.target.closest('#completedFoodSlots') ||
+                                       e.target.classList.contains('scrollable');
+                
+                if (!isScrollableArea) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+            }, { passive: false });
+            
+            // 初始化完成
+            setTimeout(() => {
+                console.log('🔄 游戏初始化完成');
+            }, 500);
+            
+            console.log('✅ 拖动和滚动修复完成');
+        });
+        
+        function togglePause() {
+            if (window.game) {
+                window.game.togglePause();
+            } else {
+                alert('游戏未加载完成');
+            }
+        }
+    </script>
+    <script src="js/game2d.js"></script>
+    <script>
+        // 阻止游戏自动初始化
+        // 游戏将由开始界面的按钮来启动
+        console.log('游戏脚本已加载，等待用户点击开始...');
+    </script>
+</body>
+</html> 
