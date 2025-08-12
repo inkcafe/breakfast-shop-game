@@ -83,17 +83,8 @@
         
 
         
-        .order-item {
-            background: rgba(255, 255, 255, 0.1);
-            margin: 6px 0;
-            padding: 8px;
-            border-radius: 8px;
-            font-size: 13px;
-            border-left: 4px solid #4CAF50;
-            line-height: 1.4;
-            position: relative;
-            pointer-events: auto !important;
-        }
+        /* 订单列表样式移除（两框布局不再使用） */
+        .order-item { display: none; }
         
         .order-content {
             display: flex;
@@ -113,10 +104,7 @@
             margin-bottom: 4px;
         }
         
-        .order-items {
-            color: #DDD;
-            line-height: 1.3;
-        }
+        .order-items { display: none; }
         
         .fulfill-btn-square {
             width: 40px;
@@ -539,9 +527,9 @@
         /* 主要UI容器：基于 1920x1080 画布的固定坐标，随外层缩放同步 */
         #mainUI {
             position: absolute;
-            top: 54px;   /* ≈1080*0.05 */
+            top: 34px;   /* 上移10px */
             right: 60px; /* 微调更靠右 */
-            width: 272px; /* 略微缩小 */
+            width: 240px; /* 还原为统一宽度 240px */
             height: 1026px; /* ≈1080*0.95，固定画布像素，随外层缩放一致 */
             background: transparent;
             backdrop-filter: none;
@@ -558,56 +546,17 @@
             image-rendering: crisp-edges;
         }
 
-        /* 成品槽样式 - kuang3图片背景 (顶部) */
-        #foodSlots {
-            background: url('images/kuang3.png') no-repeat center;
-            background-size: 100% 100%;
-            padding: 0;
-            border-radius: 0;
-            color: white;
-            margin-bottom: 0;
-            border: none;
-            height: 202px;
-            width: 252px; /* 略微再缩小 */
-            position: absolute;
-            top: 0;        /* 顶部开始 */
-            left: 62px;    /* 再右移 22px（整体右移7px） */
-            /* 像素完美渲染 */
-            image-rendering: -moz-crisp-edges;
-            image-rendering: -webkit-crisp-edges;
-            image-rendering: pixelated;
-            image-rendering: crisp-edges;
-        }
+        /* 移除旧三框布局的 #foodSlots 定位背景，改由新两框容器控制 */
+        #foodSlots { background: transparent; position: static; width: auto; height: auto; }
         
         #foodSlots h4 {
-            margin: 12px 16px 8px 16px;
+            margin: 12px 0 8px 0;
             font-size: 16px;
             font-weight: bold;
             color: #FFD700;
         }
         
-        /* 订单面板 - kuang1图片背景 (底部) */
-        #orderPanel {
-            background: url('images/kuang1.png') no-repeat center;
-            background-size: 100% 100%;
-            padding: 0;
-            border-radius: 0;
-            color: white;
-            margin-bottom: 0;
-            border: none;
-            font-size: 11px;
-            width: 252px; /* 略微再缩小 */
-            height: 507px; /* 88:50比例，288 × (88/50) = 507px */
-            position: absolute;
-            top: 539px; /* plateArea(212) + 317 + 10px 间距 = 539 */
-            left: 47px; /* 与kuang3左沿对齐（整体右移7px） */
-            overflow: hidden;
-            /* 像素完美渲染 */
-            image-rendering: -moz-crisp-edges;
-            image-rendering: -webkit-crisp-edges;
-            image-rendering: pixelated;
-            image-rendering: crisp-edges;
-        }
+        /* 移除旧 orderPanel 样式 */
         
         /* 其他UI元素透明化 */
         .ui-element {
@@ -629,46 +578,17 @@
 
         /* 内容区域边距设置 - 已整合到主样式中 */
 
-        #orderList {
-            margin: 16px;
-            font-size: 14px;
-            width: 250px;
-            max-height: 641px;
-            height: 641px;
-            overflow-y: auto;
-            overflow-x: hidden;
-            box-sizing: border-box;
-            padding: 12px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            border: 2px solid rgba(255, 255, 255, 0.1);
-            -webkit-overflow-scrolling: touch;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
-            touch-action: pan-y;
-            position: relative;
-            z-index: 1;
-            pointer-events: auto !important;
-        }
+        /* 旧订单列表容器移除 */
+        #orderList { display: none; }
 
         /* 滚动条样式优化 */
-        #orderList::-webkit-scrollbar {
-            width: 8px;
-        }
+        #orderList::-webkit-scrollbar { display: none; }
 
-        #orderList::-webkit-scrollbar-track {
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 4px;
-        }
+        #orderList::-webkit-scrollbar-track { display: none; }
 
-        #orderList::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.3);
-            border-radius: 4px;
-        }
+        #orderList::-webkit-scrollbar-thumb { display: none; }
 
-        #orderList::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.5);
-        }
+        #orderList::-webkit-scrollbar-thumb:hover { display: none; }
 
         /* 功能区域精确对齐kuang框架 */
         .food-icon {
@@ -719,12 +639,7 @@
             color: #FFD700;
         }
 
-        #orderPanel h4 {
-            margin: 20px 24px 16px 24px;
-            font-size: 20px;
-            font-weight: bold;
-            color: #FFD700;
-        }
+        /* 旧 orderPanel 标题样式移除 */
 
         #completedFoodSlots {
             display: flex;
@@ -732,7 +647,7 @@
             flex-wrap: wrap;
             min-height: 140px;
             max-height: 220px; /* 提高可视高度，便于滚动 */
-            width: 250px;
+            width: 100%;
             background: rgba(255, 255, 255, 0.1);
             border-radius: 8px;
             padding: 12px;
@@ -796,35 +711,16 @@
             line-height: 1;
         }
 
-        #plateArea {
-            background: url('images/kuang2.png') no-repeat center;
-            background-size: 100% 100%;
-            padding: 0;
-            border-radius: 0;
-            color: white;
-            margin-bottom: 0;
-            border: none;
-            height: 317px;
-            width: 252px; /* 略微再缩小 */
-            position: absolute;
-            top: 212px; /* foodSlots(202) + 10px 间距 */
-            left: 47px; /* 与kuang3( foodSlots )左沿对齐（整体右移7px） */
-            /* 像素完美渲染 */
-            image-rendering: -moz-crisp-edges;
-            image-rendering: -webkit-crisp-edges;
-            image-rendering: pixelated;
-            image-rendering: crisp-edges;
-        }
+        /* #plateArea 作为 kuang2 内部内容容器，不再自带背景与绝对定位 */
+        #plateArea { padding: 0; border: none; margin: 0; background: transparent; position: static; color: white; }
 
         #currentPlate {
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 50%;
+            background: transparent;
+            border-radius: 0;
             width: 200px;
             height: 200px;
             margin: 16px auto 20px;
             position: relative;
-            border: 5px solid #8B4513;
-            box-shadow: inset 0 4px 16px rgba(0, 0, 0, 0.3);
             touch-action: manipulation;
             cursor: grab;
             user-select: none;
@@ -850,7 +746,7 @@
             left: 0;
             width: 100%;
             height: 100%;
-            border-radius: 50%;
+            border-radius: 0;
         }
 
         .plate-item {
@@ -1164,32 +1060,29 @@
 
         <div id="ui">
             <!-- 右侧主UI面板（开始前也显示，但不可交互） -->
-            <div id="mainUI">
-                <!-- 成品槽区域 - kuang3 (顶部) -->
-                <div id="foodSlots">
-                    <h4>🍳 完成的食物</h4>
-                    <div id="completedFoodSlots">
-                        <!-- 动态生成成品槽 -->
+            <div id="mainUI" style="display:flex; flex-direction:column; gap:20px; height:100%; justify-content:flex-start; align-items:center; padding-bottom: 300px;">
+                <!-- 侧边栏重做：上 kuang1 显示完成的餐食，下 kuang2 显示餐盘，两个框纵向对齐，间距固定，保持原图比例 -->
+                <div id="kuang1" class="kuang" style="flex:0 0 auto; width: 240px; height: 629px; background: url('images/kuang1.png') no-repeat center center; background-size: contain; image-rendering: pixelated; padding: 12px; position: relative; left: 20px;">
+                    <div id="foodSlots">
+                        <h4 style="margin: 8px 0 6px 0; text-align:center;">🍳 完成的食物</h4>
+                        <div id="completedFoodSlots" style="width: 100%; height: calc((100% - 40px) * 2.3); overflow-y: auto; padding: 8px;">
+                            <!-- 动态生成成品槽 -->
+                        </div>
                     </div>
                 </div>
 
-                <!-- 餐盘区域 - kuang2 (中间) -->
-                <div id="plateArea">
-                    <h4>🍽️ 餐盘配菜</h4>
-                    <div id="currentPlate">
-                        <div class="plate-base">点击完成的食物放入餐盘<br/>点击订单交餐按钮提交</div>
-                        <div id="plateItems"></div>
+                <div id="kuang2" class="kuang" style="flex:0 0 auto; width: 225px; aspect-ratio: 1 / 1; background: url('images/kuang2.png') no-repeat center center; background-size: contain; image-rendering: pixelated; padding: 12px 12px 16px 12px; position: absolute; left: calc(50% + 31px); transform: translateX(-50%); bottom: 148px;">
+                    <div id="plateArea">
+                        <h4>🍽️ 餐盘配菜</h4>
+                        <div id="currentPlate" style="width: 200px; height: 200px; margin: 0 auto;">
+                            <div class="plate-base">点击完成的食物放入餐盘<br/>点击订单交餐按钮提交</div>
+                            <div id="plateItems"></div>
+                        </div>
+                        <!-- 将按钮放入 kuang2 内部底部 -->
+                        <div class="plate-actions" style="position:absolute; left:50%; transform:translateX(-50%); bottom:0; display:flex; justify-content:center; width:100%; pointer-events: none;">
+                            <button id="clearPlate" class="action-btn" style="min-width: 140px; width:140px; height:36px; padding:6px 10px; margin-left:-5px; transform: translate(-13px, 42px); pointer-events: auto;">清空餐盘</button>
+                        </div>
                     </div>
-                    <!-- 将按钮放入 kuang2 内部底部 -->
-                    <div class="plate-actions" style="position:absolute; left:50%; transform:translateX(-50%); bottom:-1px; display:flex; justify-content:center; width:100%;">
-                        <button id="clearPlate" class="action-btn" style="min-width: 140px; width:140px; height:36px; padding:6px 10px; margin-left:-5px; transform: translate(-13px, 7px);">清空餐盘</button>
-                    </div>
-                </div>
-                
-                <!-- 订单面板 - kuang1 (底部) -->
-                <div id="orderPanel" style="display: block !important; visibility: visible !important;">
-                    <h4>📋 待处理订单</h4>
-                    <div id="orderList" style="display: block !important; visibility: visible !important; min-height: 50px; border: 1px solid #444;"></div>
                 </div>
             </div>
             
@@ -1276,44 +1169,8 @@
         document.addEventListener('DOMContentLoaded', applyFitScale);
         window.addEventListener('load', () => setTimeout(alignRightPanels, 0));
 
-        // 严格按 kuang3(#foodSlots) 的位置对齐 kuang2/kuang1
-        function alignRightPanels() {
-            const kuang3 = document.getElementById('foodSlots');
-            const kuang2 = document.getElementById('plateArea');
-            const kuang1 = document.getElementById('orderPanel');
-            if (!kuang3 || !kuang2 || !kuang1) return;
-            const spacing = 10;
-            // 使用计算后的样式，避免仅依赖 inline style
-            const cs3 = window.getComputedStyle(kuang3);
-            const baseLeft = parseInt(cs3.left, 10) || 55;
-            const baseTop = parseInt(cs3.top, 10) || 0;
-            const h3 = kuang3.offsetHeight || 202;
-            const h2 = kuang2.offsetHeight || 317;
-            kuang2.style.left = baseLeft + 'px';
-            kuang1.style.left = baseLeft + 'px';
-            kuang2.style.top = (baseTop + h3 + spacing) + 'px';
-            kuang1.style.top = (baseTop + h3 + spacing + h2 + spacing) + 'px';
-
-            // 让 kuang1 下沿对齐底部四个按钮的下沿（#viewControls bottom: 26px）
-            const canvasHeight = 1080; // 设计分辨率高度
-            const bottomLine = 26; // 与 #viewControls 的 bottom 一致
-            const mainUI = document.getElementById('mainUI');
-            const mainUITop = mainUI ? (parseInt(window.getComputedStyle(mainUI).top, 10) || 0) : 0;
-            const kuang1Top = parseInt(kuang1.style.top || '539', 10);
-            // 目标： (mainUITop + kuang1Top + height) = canvasHeight - bottomLine
-            const desiredHeight = Math.max(100, (canvasHeight - bottomLine) - (mainUITop + kuang1Top));
-            kuang1.style.height = desiredHeight + 'px';
-
-            // 同步内部列表高度，避免溢出（预留标题和内边距）
-            const orderList = document.getElementById('orderList');
-            const title = kuang1.querySelector('h4');
-            const titleBox = title ? title.getBoundingClientRect() : null;
-            const titleHeight = titleBox ? titleBox.height : 42; // 估算标题高度
-            const innerPadding = 32; // 上下内边距预留
-            const listHeight = Math.max(50, desiredHeight - titleHeight - innerPadding);
-            orderList.style.height = listHeight + 'px';
-            orderList.style.maxHeight = listHeight + 'px';
-        }
+        // 旧三框对齐逻辑移除：当前使用新两框布局，跟随容器自适应
+        function alignRightPanels() {}
         // 开始界面管理
         class StartScreen {
             constructor() {
@@ -1332,16 +1189,19 @@
                 // 所有美术素材预加载就绪
                 this.allAssetsReady = false;
                 this.loadedAssets = 0;
+                this.loadingStart = Date.now();
+                this.maxPreloadWaitMs = 7000; // 最多等待7秒，超时直接允许进入
                 this.assetList = [
                     'images/background1.png','images/biaoti.png','images/bucket.png','images/dating.png','images/desk.png','images/dianfanbao.png',
                     'images/doufu.png','images/doufu1.png','images/doujiang.png','images/doujiang1.png','images/doujiang2.png','images/doujiang3.png','images/doujiang4.png','images/doujiangzhuo.png',
                     'images/front.png','images/guke1.png','images/guke2.png','images/guke3.png','images/hu.png','images/hu2.png','images/huangdou.png','images/huangdou1.png',
-                    'images/jiesuan.png','images/juanlianmen.png','images/kaishi.png','images/kongwan.png','images/kongzhou.png','images/kuang1.png','images/kuang2.png','images/kuang3.png',
+                    'images/jiesuan.png','images/juanlianmen.png','images/kaishi.png','images/kongwan.png','images/kongzhou.png','images/kuang1.png','images/kuang2.png',
                     'images/lajitong.png','images/manwan.png','images/mian1.png','images/mian2.png','images/mian3.png','images/miantuan.png','images/miantuantiao.png',
                     'images/qian.png','images/shezhi.png','images/shuoming.png','images/shuyoutiao1.png','images/shuyoutiao2.png','images/shuyoutiao3.png','images/wandui.png',
-                    'images/woo.png','images/xiancai.png','images/xiancai1.png','images/xiandan.png','images/xiandan1.png','images/xiayitian.png','images/yingye.png','images/youguo.png',
-                    'images/youtiao.png','images/youtiao1.1.png','images/youtiao1.2.png','images/youtiao1.3.png','images/youtiao1.4.png','images/youtiao1.5.png','images/youtiao1.6.png',
-                    'images/zhou.png','images/zhoucai.png','images/zhoucaizhuo.png','images/zhuye.png'
+                    'images/qipao.png','images/xiancai.png','images/xiancai0.png','images/xiancai1.png','images/xiandan.png','images/xiandan0.png','images/xiandan1.png','images/xiayitian.png','images/yingye.png','images/youguo.png',
+                    'images/youtiao.png','images/youtiao0.png','images/youtiao1.1.png','images/youtiao1.2.png','images/youtiao1.3.png','images/youtiao1.4.png','images/youtiao1.5.png','images/youtiao1.6.png','images/zhou0.png','images/huangdou0.png','images/doufu0.png',
+                    'images/doujiang0.png','images/doujiang1.png','images/doujiang2.png','images/doujiang3.png','images/doujiang4.png','images/canpan.png',
+                    'images/zhou.png','images/zhoucai.png','images/zhoucaizhuo.png','images/zhuye.png','images/fanshao.png'
                 ];
                 this.totalAssets = this.assetList.length;
                 this.init();
@@ -1362,7 +1222,8 @@
                     const percent = Math.floor((this.loadedAssets / Math.max(1, this.totalAssets)) * 100);
                     this.loadingProgress = percent;
                     progressBar.style.width = `${this.loadingProgress}%`;
-                    if (this.allAssetsReady) {
+                    if (this.allAssetsReady || (Date.now() - this.loadingStart) > this.maxPreloadWaitMs) {
+                        this.allAssetsReady = true; // 超时强制继续
                         clearInterval(tipInterval);
                         this.showStartButtons();
                     } else {
@@ -1391,7 +1252,7 @@
                     setTimeout(() => {
                         loadingSection.style.display = 'none';
                         // 关键素材或全量素材未就绪则继续显示loading，不展示按钮
-                        const ready = this.assetsReady.juanlianmen && this.assetsReady.yingye && this.allAssetsReady;
+                        const ready = (this.assetsReady.juanlianmen && this.assetsReady.yingye && this.allAssetsReady) || ((Date.now() - this.loadingStart) > this.maxPreloadWaitMs);
                         if (!ready) {
                             // 退回loading并稍后重试
                             loadingSection.style.display = 'block';
@@ -1483,13 +1344,11 @@
 
                 const tryHideStart = () => {
                     if (isGameReady()) {
-                        startScreen.classList.add('fade-out');
-                        setTimeout(() => {
-                            startScreen.style.display = 'none';
-                            // 显示主页面按钮（视图切换栏）
-                            const vc = document.getElementById('viewControls');
-                            if (vc) vc.style.display = 'flex';
-                        }, 300);
+                            startScreen.classList.add('fade-out');
+                            setTimeout(() => {
+                                startScreen.style.display = 'none';
+                                // 不再提前显示下侧四个按钮，等开始营业后由游戏逻辑显示
+                            }, 300);
                     } else {
                         // 继续等待，下一帧再试
                         requestAnimationFrame(tryHideStart);
@@ -1500,16 +1359,35 @@
 
             initializeGame() {
                 try {
-                    // 确保游戏加载完成
+                    // 若类已存在，直接初始化
                     if (typeof BreakfastShop2D !== 'undefined') {
                         window.game = new BreakfastShop2D();
                         console.log('游戏初始化成功');
-                    } else {
-                        console.error('游戏类未找到，延迟重试...');
-                        setTimeout(() => {
-                            this.initializeGame();
-                        }, 500);
+                        return;
                     }
+
+                    // 若尚未加载到类，则动态加载脚本并在加载完成后再初始化
+                    const existing = document.getElementById('game2d-script');
+                    if (!existing) {
+                        console.warn('游戏类未找到，尝试动态加载脚本 js/game2d.js ...');
+                        const s = document.createElement('script');
+                        s.src = 'js/game2d.js';
+                        s.id = 'game2d-script';
+                        s.onload = () => {
+                            console.log('js/game2d.js 已加载');
+                            setTimeout(() => this.initializeGame(), 50);
+                        };
+                        s.onerror = () => {
+                            console.error('js/game2d.js 加载失败，稍后重试');
+                            setTimeout(() => this.initializeGame(), 600);
+                        };
+                        document.body.appendChild(s);
+                        return;
+                    }
+
+                    // 已有脚本但类仍未就绪，稍后重试
+                    console.error('游戏类未找到，延迟重试...');
+                    setTimeout(() => { this.initializeGame(); }, 500);
                 } catch (error) {
                     console.error('游戏初始化错误:', error);
                 }
@@ -1537,7 +1415,7 @@
                 preload('images/desk.png', 'desk');
                 preload('images/front.png', 'front');
                 preload('images/background1.png', 'background1');
-                preload('images/background.png', 'background');
+                // 移除不存在的 background.png 预加载
             }
 
             // 全量素材预加载（带失败重试与缓存破坏）
@@ -1616,8 +1494,7 @@
             
             // 防止整体页面滚动，但允许指定区域滚动
             document.body.addEventListener('touchmove', (e) => {
-                const isScrollableArea = e.target.closest('#orderList') || 
-                                       e.target.closest('#completedFoodSlots') ||
+                const isScrollableArea = e.target.closest('#completedFoodSlots') ||
                                        e.target.classList.contains('scrollable');
                 
                 if (!isScrollableArea) {

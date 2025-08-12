@@ -3,6 +3,16 @@
 class BreakfastShop2D {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
+        this.debug = true; // 开启调试，显示可视化框
+        // 独立的餐盘拖拽状态（不与其它拖拽复用，避免冲突）
+        this.plateDrag = {
+            active: false,
+            ghostEl: null,
+            startClientX: 0,
+            startClientY: 0,
+            moveHandler: null,
+            upHandler: null
+        };
         if (!this.canvas) {
             console.error('Canvas element not found!');
             return;
@@ -14,25 +24,8 @@ class BreakfastShop2D {
         this.ctx.webkitImageSmoothingEnabled = false;
         this.ctx.mozImageSmoothingEnabled = false;
         this.ctx.msImageSmoothingEnabled = false;
-
-        // 预加载 hu 与 hu2 图片
-        this.huImage = new Image();
-        this.huImage.onload = () => {
-            console.log('✅ hu.png loaded');
-        };
-        this.huImage.onerror = () => {
-            console.warn('❌ Failed to load hu image: images/hu.png');
-        };
-        this.huImage.src = 'images/hu.png?t=' + Date.now();
-
-        this.hu2Image = new Image();
-        this.hu2Image.onload = () => {
-            console.log('✅ hu2.png loaded');
-        };
-        this.hu2Image.onerror = () => {
-            console.warn('❌ Failed to load hu2 image: images/hu2.png');
-        };
-        this.hu2Image.src = 'images/hu2.png?t=' + Date.now();
+        
+        // 豆浆界面取消 hu/hu2 的加载与表现
         
         this.gameState = {
             money: 100,
@@ -53,13 +46,24 @@ class BreakfastShop2D {
             currentPlate: [],
             tables: [],
             currentView: 'main', // 'main', 'youtiao', 'doujiang', 'congee'
+            // 顾客评价系统
+            reviews: [], // {stars: number(1-5), text: string, time: number}
+            avgRating: 5.0,
             // 🎯 重新设计的粥制作状态
             congeeState: {
                 currentStep: 'idle', // 'idle', 'dianfanbao_clicked', 'zhou_ready', 'selecting_sides', 'completed'
                 selectedSides: [], // 已选择的配菜
                 congeeInProgress: null, // 当前制作中的粥
                 completedCongee: [], // 完成的粥（可拖拽到餐盘）
-                sideSelectionMode: false // 是否在配菜选择模式
+                sideSelectionMode: false, // 是否在配菜选择模式
+                // 配菜拖拽状态
+                draggingSideActive: false,
+                draggingSideName: null,
+                draggingSideX: 0,
+                draggingSideY: 0,
+                fanshaoFollowing: false,
+                fanshaoX: 0,
+                fanshaoY: 0
             },
             // 新增油条制作状态
             youtiaoState: {
@@ -121,8 +125,17 @@ class BreakfastShop2D {
             followRafId: null
         };
 
+        // 豆浆碗长按检测状态
+        this._doujiangPress = {
+            isPressing: false,
+            startAt: 0,
+            pouringIndex: -1,
+            started: false,
+            timerId: null
+        };
+
         this.config = {
-            dayDuration: 180,
+            dayDuration: 150,
             maxCustomers: 2, // 进一步降低最大顾客数
             customerSpawnRate: 0.2, // 进一步降低生成率
             foodPrices: {
@@ -162,6 +175,127 @@ class BreakfastShop2D {
         this.init();
     }
 
+    // 在非大厅界面，左侧显示未接单顾客图标（youke），垂直排列
+    renderWaitingCustomerIcons() {
+        try {
+            if (this.gameState.currentView === 'main') return; // 大厅不显示
+            const waiting = (this.gameState.customers || []).filter(c => c.state === 'waiting' && !c.hasOrdered);
+            if (waiting.length === 0) return;
+
+            // youke 图标统一使用 youke.png
+            const iconImg = (this.youkeImage && this.youkeImage.complete) ? this.youkeImage : null;
+            const walkingLine = this.getCustomerWalkingLine();
+            const baseX = (this.background1OffsetX || 0) + 18; // 稍微右移一些
+            // 让图标中心与顾客水平线相近（按图标高度一半向上偏移）
+            const scale = 0.4; // 进一步放大 youke
+            const iconW = (this.youkeImage ? this.youkeImage.width * this.backgroundScaleX * scale : 36);
+            const iconH = (this.youkeImage ? this.youkeImage.height * this.backgroundScaleY * scale : 36);
+            const baseY = walkingLine - iconH / 2; // 与顾客差不多的水平位置
+            const gapY = iconH + 10; // 垂直间距基于图标高度
+
+            this.ctx.save();
+            this.ctx.imageSmoothingEnabled = false;
+            waiting.slice(0, 6).forEach((c, i) => {
+                const x = baseX;
+                const y = baseY + i * gapY;
+                if (iconImg) {
+                    const w = iconW;
+                    const h = iconH;
+                    this.ctx.drawImage(iconImg, Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+                } else {
+                    this.ctx.fillStyle = '#FFD54F';
+                    this.ctx.fillRect(x, y, Math.round(iconW), Math.round(iconH));
+                }
+            });
+            this.ctx.restore();
+        } catch (_) {}
+    }
+
+    // 检测壶与豆浆碗的矩形是否有重叠（不再要求中心命中），返回命中的碗索引；否则返回 -1
+    findOverlappedDoujiangBowlIndex(kettleX, kettleY) {
+        try {
+            const doujiangItems = (this.gameState.cookingItems || []).filter(i => i.type === 'doujiang');
+            if (doujiangItems.length === 0) return -1;
+            const tablePos = this.getDoujiangzhuoPosition();
+            const cupSpacing = 150;
+            const leftOffset = 50;
+            const startX = tablePos.x + leftOffset;
+            const baseY = tablePos.y - 15;
+            const rowGap = 110;
+
+            // 计算当前壶的矩形（使用与渲染一致的缩放）
+            const assetScaleKettle = 0.8;
+            const selected = !!(this.gameState && this.gameState.doujiangState && this.gameState.doujiangState.kettleSelected);
+            const usingHu = selected && (this.gameState.cookingItems || []).some(it => it.type==='doujiang' && it.isPourHeld);
+            const kettleImg = usingHu ? this.huImage : this.hu2Image;
+            let kw = 60, kh = 40;
+            if (kettleImg && (kettleImg.complete || kettleImg.width > 0)) {
+                kw = kettleImg.width * this.backgroundScaleX * assetScaleKettle;
+                kh = kettleImg.height * this.backgroundScaleY * assetScaleKettle;
+            }
+            // 壶当前的绘制左上角坐标（渲染时是以中心跟随，绘制为 center - size/2）
+            const kx = kettleX - kw / 2;
+            const ky = kettleY - kh / 2;
+
+            // 仅对已存在的豆浆碗进行命中检测（最多6个）
+            for (let i = 0; i < Math.min(doujiangItems.length, 6); i++) {
+                const row = Math.floor(i / 3);
+                const col = i % 3;
+                const cupX = startX + col * cupSpacing;
+                const cupY = baseY + row * rowGap;
+                // 估算碗的可交互区域（与渲染尺寸一致的0.85缩放）
+                const key = `doujiang4Image`;
+                const currentImage = this.doujiangBowlImages && this.doujiangBowlImages[key];
+                let bw = 80, bh = 60;
+                const assetScaleBowl = 0.85;
+                if (currentImage && currentImage.complete) {
+                    bw = currentImage.width * this.backgroundScaleX * assetScaleBowl;
+                    bh = currentImage.height * this.backgroundScaleY * assetScaleBowl;
+                }
+                // 矩形重叠检测
+                const bx = cupX;
+                const by = (row === 1) ? (cupY - 30) : cupY; // 第二排判定区上移30px
+                const overlap = !(kx + kw < bx || bx + bw < kx || ky + kh < by || by + bh < ky);
+                if (overlap) return i;
+            }
+            return -1;
+        } catch (_) { return -1; }
+    }
+
+    // 基于点击点的豆浆碗命中：仅判断点是否落在某个碗的矩形范围内
+    findDoujiangBowlIndexByPoint(pointX, pointY) {
+        try {
+            const doujiangItems = (this.gameState.cookingItems || []).filter(i => i.type === 'doujiang');
+            if (doujiangItems.length === 0) return -1;
+            const tablePos = this.getDoujiangzhuoPosition();
+            const cupSpacing = 150;
+            const leftOffset = 50;
+            const startX = tablePos.x + leftOffset;
+            const baseY = tablePos.y - 15;
+            const rowGap = 110;
+
+            const key = `doujiang4Image`;
+            const currentImage = this.doujiangBowlImages && this.doujiangBowlImages[key];
+            const assetScale = 0.85;
+            let bw = 80, bh = 60;
+            if (currentImage && currentImage.complete) {
+                bw = currentImage.width * this.backgroundScaleX * assetScale;
+                bh = currentImage.height * this.backgroundScaleY * assetScale;
+            }
+
+            for (let i = 0; i < Math.min(doujiangItems.length, 6); i++) {
+                const row = Math.floor(i / 3);
+                const col = i % 3;
+                const cupX = startX + col * cupSpacing;
+                const cupY = baseY + row * rowGap;
+                if (pointX >= cupX && pointX <= cupX + bw && pointY >= cupY && pointY <= cupY + bh) {
+                    return i;
+                }
+            }
+            return -1;
+        } catch (_) { return -1; }
+    }
+
     // 🎯 通过达成订单目标结束一天（先完整播放卷帘门遮挡动画，再显示结算界面）
     triggerEndOfDayByOrders() {
         if (!this.gameState.isRunning) return;
@@ -187,6 +321,27 @@ class BreakfastShop2D {
         const reputation = this.gameState.reputation;
         const orders = this.gameState.completedOrdersToday || 0;
         const avgSatisfaction = this.calculateAverageSatisfaction();
+        // 创建一个独立于canvas的全屏幕卷帘门背景，避免任何黑屏
+        try {
+            const existing = document.getElementById('summaryBackdrop');
+            const cacheBustBg = Date.now();
+            if (!existing) {
+                const bd = document.createElement('div');
+                bd.id = 'summaryBackdrop';
+                bd.style.position = 'fixed';
+                bd.style.left = '0';
+                bd.style.top = '0';
+                bd.style.width = '100%';
+                bd.style.height = '100%';
+                bd.style.zIndex = '9000'; // 在modal(9999)之下，但在其它元素之上
+                bd.style.background = `url('images/juanlianmen.png?t=${cacheBustBg}') center center / cover no-repeat`;
+                bd.style.imageRendering = 'pixelated';
+                bd.style.pointerEvents = 'none';
+                document.body.appendChild(bd);
+            } else {
+                existing.style.display = 'block';
+            }
+        } catch(_) {}
         const modalId = 'daySummaryModal';
         let modal = document.getElementById(modalId);
         if (!modal) {
@@ -196,10 +351,15 @@ class BreakfastShop2D {
             modal.style.left = '50%';
             modal.style.top = '50%';
             modal.style.transform = 'translate(-50%, -50%)';
-            modal.style.background = 'rgba(0,0,0,0.85)';
+            // 透明背景，避免在结算图周围出现黑色背景
+            modal.style.background = 'transparent';
             modal.style.color = '#fff';
-            modal.style.padding = '20px 28px';
-            modal.style.border = '2px solid #fff';
+            // 去除内边距，避免形成视觉边框
+            modal.style.padding = '0';
+            // 去除边框，避免出现黑色描边
+            modal.style.border = 'none';
+            modal.style.boxShadow = 'none';
+            modal.style.boxShadow = 'none';
             modal.style.zIndex = '9999';
             modal.style.fontFamily = 'Arial, sans-serif';
             modal.style.textAlign = 'center';
@@ -215,16 +375,24 @@ class BreakfastShop2D {
                     <div style="margin:4px 0;">当前资金：<strong>¥${this.gameState.money.toFixed(0)}</strong></div>
                     <div style="margin:4px 0;">当前名誉：<strong>${reputation}</strong></div>
                     <div style="margin:4px 0;">顾客满意度：<strong>${avgSatisfaction}%</strong></div>
+                    
                 </div>
                 <button id="nextDayBtn" style="position:absolute; right:6%; bottom:6%; width:180px; height:64px; background:url('images/xiayitian.png?t=${cacheBust}') no-repeat center center; background-size: contain; border:none; outline:none; cursor:pointer; color:transparent; image-rendering: pixelated;"></button>
             </div>
         `;
         modal.style.display = 'block';
-        // 保证结算时不被卷帘门遮挡（避免黑屏）
+        // 结算时让卷帘门充满画面，防止黑屏（canvas层）
         if (this.gameState && this.gameState.juanLianMenState) {
-            this.gameState.juanLianMenState.isAnimating = false;
-            this.gameState.juanLianMenState.isVisible = false; // 隐藏卷帘门
+            const j = this.gameState.juanLianMenState;
+            j.isVisible = true;
+            j.isAnimating = false; // 静止显示
+            j.position = 0; // 0 表示完全遮挡（从屏幕顶端覆盖到底）
         }
+        // 确保画布在上层渲染卷帘门
+        const canvasEl = document.getElementById('gameCanvas');
+        if (canvasEl) canvasEl.style.zIndex = '500';
+        // 立即重绘一帧（绘制卷帘门充满画面）
+        try { this.render(); } catch(_) {}
         // 恢复UI层可见与交互
         const ui = document.getElementById('ui');
         if (ui) ui.style.zIndex = '450';
@@ -245,18 +413,24 @@ class BreakfastShop2D {
             this.timeLeft = this.config.dayDuration;
             this._elapsedDayMs = 0;
         } catch(_) {}
+        // 结算界面不再显示/运行倒计时
+
         const btn = document.getElementById('nextDayBtn');
         if (btn) {
             btn.onclick = () => {
-                // 仅关闭结算，下一天需要玩家点击“开始营业”
+                // 关闭结算
                 modal.style.display = 'none';
-                // 确保结算关闭后仍不显示卷帘门（等待玩家手动开始）
-                if (this.gameState && this.gameState.juanLianMenState) {
-                    this.gameState.juanLianMenState.isAnimating = false;
-                    this.gameState.juanLianMenState.isVisible = false;
-                }
-                this.prepareNextDay();
-                // 不自动拉起卷帘门、不自动生成顾客
+                // 清理倒计时计时器（保险）
+                try { clearTimeout(this._nextDayCountdownTimer); } catch(_) {}
+                // 直接播放卷帘门动画并开始下一天
+                try {
+                    // 卷帘门下降-上升
+                    this.startJuanLianMenAnimation();
+                } catch(_) {}
+                // 略微延迟，等待动画起势，再开始营业
+                setTimeout(() => {
+                    try { this.startDay(); } catch(_) { this.startDay(); }
+                }, 200);
             };
         }
     }
@@ -284,36 +458,91 @@ class BreakfastShop2D {
             startBtn.style.display = '';
         }
         if (topControls) topControls.style.display = '';
+        // 未开始营业：隐藏右侧栏与下侧按钮
+        this.setPreStartUIHidden(true);
+        // 同时确保下侧四个视图按钮在未营业时不显示
+        try { const vc = document.getElementById('viewControls'); if (vc) vc.style.display = 'none'; } catch(_) {}
+        // 下一天等待开始时：让卷帘门背景继续可见，避免普通背景
+        try {
+            const bd = document.getElementById('summaryBackdrop');
+            if (bd) {
+                bd.style.display = 'block';
+                bd.style.pointerEvents = 'none';
+                bd.style.zIndex = '200'; // 在UI之下
+            } else {
+                const cacheBustBg = Date.now();
+                const bg = document.createElement('div');
+                bg.id = 'summaryBackdrop';
+                bg.style.position = 'fixed';
+                bg.style.left = '0';
+                bg.style.top = '0';
+                bg.style.width = '100%';
+                bg.style.height = '100%';
+                bg.style.zIndex = '200';
+                bg.style.background = `url('images/juanlianmen.png?t=${cacheBustBg}') center center / cover no-repeat`;
+                bg.style.imageRendering = 'pixelated';
+                bg.style.pointerEvents = 'none';
+                document.body.appendChild(bg);
+            }
+        } catch(_) {}
         // UI 更新
         this.updateUI();
+        try { this.renderPlateDragDebug(); } catch(_) {}
     }
 
-    // 音乐控制：开始营业后播放背景音乐
+    // 获取可用的 BGM 曲目清单（使用现有音频资源，避免404）
+    getBgmTrackList() {
+        // 经营期间仅播放背景曲
+        return ['audio/background.mp3'];
+    }
+
+    hasMovingCustomers() {
+        try {
+            const customers = this.gameState && Array.isArray(this.gameState.customers) ? this.gameState.customers : [];
+            // 认为 state 为 entering/leaving 或者存在 targetX/targetY 与当前位置差距较大即为“在移动”
+            return customers.some(c => {
+                if (!c) return false;
+                if (c.state === 'entering' || c.state === 'leaving') return true;
+                const dx = (c.targetX ?? c.x) - c.x;
+                const dy = (c.targetY ?? c.y) - c.y;
+                return Math.hypot(dx, dy) > 1;
+            });
+        } catch (_) { return false; }
+    }
+
+    ensureBgmAudios() {
+            if (!this.bgmAudio) {
+            this.bgmAudio = new Audio();
+                this.bgmAudio.loop = true;
+            this.bgmAudio.volume = 0.0;
+            this.bgmAudio.muted = !this.isAudioEnabled();
+        }
+        if (!this._bgmAltAudio) {
+            this._bgmAltAudio = new Audio();
+            this._bgmAltAudio.loop = true;
+            this._bgmAltAudio.volume = 0.0;
+            this._bgmAltAudio.muted = !this.isAudioEnabled();
+        }
+        if (!this._bgmActiveKey) this._bgmActiveKey = 'main'; // 'main' or 'alt'
+    }
+
+    // 音乐控制：开始营业后播放背景音乐（随机曲目、淡入），并开启随机轮播
     playBackgroundMusic() {
         try {
-            if (!this.bgmAudio) {
-                // 随机选择 jianggu 音轨（若不存在则回退 background.mp3）
-                const tracks = [
-                    'audio/background.mp3', // 回退
-                    'audio/jianggu1.mp3',
-                    'audio/jianggu2.mp3',
-                    'audio/jianggu3.mp3'
-                ];
-                const pick = () => {
-                    const idx = Math.floor(Math.random() * tracks.length);
-                    return tracks[idx];
-                };
-                this.bgmAudio = new Audio(pick());
-                this.bgmAudio.loop = true;
-                this.bgmAudio.volume = 0.0; // 先静音，做淡入
-                this.bgmAudio.muted = !this.isAudioEnabled();
-            }
+            this.ensureBgmAudios();
+            // 仅播放背景曲
+            this.stopBgmShuffleLoop();
+            this.bgmAudio.src = 'audio/background.mp3';
+            this.bgmAudio.loop = true;
+            this.bgmAudio.muted = !this.isAudioEnabled();
+            this.bgmAudio.volume = 0.0;
             const playPromise = this.bgmAudio.play();
             if (playPromise && typeof playPromise.catch === 'function') {
                 playPromise.catch(err => console.log('BGM 播放被浏览器策略阻止或失败：', err));
             }
             // 淡入至目标音量
             this.fadeInBGM();
+            // 禁用随机轮播
         } catch (e) {
             console.error('BGM 初始化/播放失败:', e);
         }
@@ -327,6 +556,9 @@ class BreakfastShop2D {
             const target = isMain ? 0.65 : 0.35; // 略微调大/调小
             this._bgmTargetVolume = target;
             this.bgmAudio.volume = Math.min(this.bgmAudio.volume, target);
+            if (this._bgmAltAudio) {
+                this._bgmAltAudio.volume = Math.min(this._bgmAltAudio.volume, target);
+            }
         } catch (_) {}
     }
 
@@ -346,24 +578,73 @@ class BreakfastShop2D {
         requestAnimationFrame(step);
     }
 
-    // 背景音乐淡出并停止
+    // 背景音乐淡出并停止（双通道）
     fadeOutAndStopBGM(durationMs = 600) {
-        if (!this.bgmAudio) return;
-        const start = this.bgmAudio.volume || 0.0;
-        const startTime = performance.now();
-        const step = (now) => {
-            const t = Math.min(1, (now - startTime) / durationMs);
-            const v = start * (1 - t);
-            this.bgmAudio.volume = v;
-            if (t < 1) {
-                requestAnimationFrame(step);
-            } else {
-                try { this.bgmAudio.pause(); } catch(_) {}
-                try { this.bgmAudio.currentTime = 0; } catch(_) {}
-                this.bgmAudio = null;
-            }
-        };
-        requestAnimationFrame(step);
+        const fadeOutOne = (audio) => new Promise(resolve => {
+            if (!audio) return resolve();
+            const start = audio.volume || 0.0;
+            const startTime = performance.now();
+            const step = (now) => {
+                const t = Math.min(1, (now - startTime) / durationMs);
+                const v = start * (1 - t);
+                audio.volume = v;
+                if (t < 1) requestAnimationFrame(step);
+                else { try { audio.pause(); audio.currentTime = 0; } catch(_) {} resolve(); }
+            };
+            requestAnimationFrame(step);
+        });
+        this.stopBgmShuffleLoop();
+        Promise.all([fadeOutOne(this.bgmAudio), fadeOutOne(this._bgmAltAudio)]).then(() => {
+            this.bgmAudio = null;
+            this._bgmAltAudio = null;
+        });
+    }
+
+    // 启动随机轮播（随机间隔内交叉淡入淡出切换曲目）
+    startBgmShuffleLoop() {
+        // 已禁用轮播：经营期间持续播放背景曲
+        this.stopBgmShuffleLoop();
+        return;
+    }
+
+    stopBgmShuffleLoop() {
+        if (this._bgmShuffleTimer) {
+            try { clearTimeout(this._bgmShuffleTimer); } catch(_) {}
+            this._bgmShuffleTimer = null;
+        }
+    }
+
+    // 交叉淡入淡出切换曲目（保持音量目标）
+    crossfadeToTrack(nextSrc, fadeMs = 1000) {
+        try {
+            this.ensureBgmAudios();
+            this.updateBGMVolume();
+            // 禁用切换，始终保持背景曲
+            nextSrc = 'audio/background.mp3';
+            const targetVol = this._bgmTargetVolume ?? 0.5;
+            const from = this._bgmActiveKey === 'alt' ? this._bgmAltAudio : this.bgmAudio;
+            const to = this._bgmActiveKey === 'alt' ? this.bgmAudio : this._bgmAltAudio;
+            if (!to) return;
+            to.src = nextSrc;
+            to.loop = true;
+            to.muted = !this.isAudioEnabled();
+            to.volume = 0.0;
+            const p = to.play(); if (p && typeof p.catch === 'function') p.catch(()=>{});
+            const startTime = performance.now();
+            const fadeStep = (now) => {
+                const t = Math.min(1, (now - startTime) / fadeMs);
+                const inV = targetVol * t;
+                const outV = (from ? from.volume : targetVol) * (1 - t);
+                to.volume = inV;
+                if (from) from.volume = outV;
+                if (t < 1) requestAnimationFrame(fadeStep);
+                else {
+                    if (from) { try { from.pause(); } catch(_) {} }
+                    this._bgmActiveKey = (this._bgmActiveKey === 'alt') ? 'main' : 'alt';
+                }
+            };
+            requestAnimationFrame(fadeStep);
+        } catch (_) {}
     }
 
     // 卷帘门音效
@@ -415,6 +696,9 @@ class BreakfastShop2D {
                     // 🎛 绑定设置面板事件
                     this.bindSettingsEvents();
                     
+                    // 未开始营业前，隐藏右侧栏与下侧按钮
+                    this.setPreStartUIHidden(true);
+                    
                     this.render();
                     this.gameLoop();
                 } catch (error) {
@@ -425,6 +709,40 @@ class BreakfastShop2D {
         } catch (error) {
             console.error('Game initialization error:', error);
         }
+    }
+
+    // 在卷帘门出现时，统一遮挡/禁用界面上的按钮与右侧框
+    applyShutterOverlay(active) {
+        try {
+            const ids = [
+                'mainUI', // 右侧框
+                'viewControls', // 下侧视图按钮
+                'topGameControls', // 顶部控制栏（含开始营业）
+                'actionButtons',
+                'gameControls'
+            ];
+            ids.forEach(id => {
+                const el = document.getElementById(id);
+                if (!el) return;
+                if (active) {
+                    el.style.visibility = 'hidden';
+                    el.style.pointerEvents = 'none';
+                } else {
+                    el.style.visibility = '';
+                    el.style.pointerEvents = '';
+                }
+            });
+        } catch (_) {}
+    }
+
+    // 未开始营业前隐藏右侧栏与下侧按钮（不影响“开始营业”按钮显示）
+    setPreStartUIHidden(hidden) {
+        try {
+            const mainUI = document.getElementById('mainUI');
+            const viewControls = document.getElementById('viewControls');
+            if (mainUI) mainUI.style.display = hidden ? 'none' : '';
+            if (viewControls) viewControls.style.display = hidden ? 'none' : '';
+        } catch (_) {}
     }
 
     // 是否开启声音
@@ -513,7 +831,8 @@ class BreakfastShop2D {
             if (!window.AudioContext && !window.webkitAudioContext) return;
             if (!this._btnAudioCtx) this._btnAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
             if (this._btnBuffer) return;
-            const res = await fetch('audio/anniu.mp3?t=' + Date.now());
+            // 本地 file:// 下带查询串可能触发 CORS/解码问题，这里不再附加参数
+            const res = await fetch('audio/anniu.mp3');
             const arr = await res.arrayBuffer();
             this._btnBuffer = await this._btnAudioCtx.decodeAudioData(arr);
         } catch (_) { /* 忽略失败，运行时走回退 */ }
@@ -605,6 +924,63 @@ class BreakfastShop2D {
         } catch (error) {
             console.error('UI缩放设置错误:', error);
         }
+    }
+    
+    // 绘制圆角矩形辅助
+    roundRect(ctx, x, y, w, h, r, fillStyle = null, strokeStyle = null) {
+        try {
+            const radius = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.arcTo(x + w, y, x + w, y + h, radius);
+            ctx.arcTo(x + w, y + h, x, y + h, radius);
+            ctx.arcTo(x, y + h, x, y, radius);
+            ctx.arcTo(x, y, x + w, y, radius);
+            ctx.closePath();
+            if (fillStyle) { ctx.fillStyle = fillStyle; ctx.fill(); }
+            if (strokeStyle) { ctx.strokeStyle = strokeStyle; ctx.lineWidth = 1; ctx.stroke(); }
+        } catch (_) {}
+    }
+
+    // 在气泡里绘制食物缩略图（基于现有素材小图叠加）
+    drawFoodThumbnail(ctx, x, y, w, h, food) {
+        try {
+            const type = food.type || food.name || '';
+            const rectW = w, rectH = h;
+            // 缩略底板
+            ctx.fillStyle = 'rgba(255,255,255,0.08)';
+            ctx.fillRect(x, y, rectW, rectH);
+            // 加载与绘制对应小图（粥、菜、豆浆、油条）
+            const centerX = x + Math.round(rectW / 2);
+            const centerY = y + Math.round(rectH / 2);
+            const draw = (img, scale = 1.0) => {
+                if (!img || !img.complete) return false;
+                const iw = Math.round(rectW * 0.9 * scale);
+                const ih = Math.round(rectH * 0.9 * scale);
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(img, centerX - Math.round(iw / 2), centerY - Math.round(ih / 2), iw, ih);
+                return true;
+            };
+            const imgs = this.images || {};
+            // 根据类型绘制：粥+菜叠加，豆浆单图，油条单图
+            if (type === 'congee' || type === 'zhou') {
+                const zhouOk = draw(imgs.zhouImg || this.sprites.zhou);
+                const caiImg = imgs.zhoucaiImg || this.sprites.zhoucai;
+                if (food.toppings && food.toppings.includes('cai')) {
+                    draw(caiImg, 0.75);
+                }
+            } else if (type === 'doujiang') {
+                draw(imgs.doujiang4Img || this.sprites.doujiang4);
+            } else if (type === 'youtiao') {
+                draw(imgs.youtiaoImg || this.sprites.youtiao);
+            } else if (type === 'egg' || type === 'dan' || type === 'xiandan') {
+                draw(imgs.xiandanImg || this.sprites.xiandan);
+            } else {
+                // 默认图标
+                ctx.fillStyle = '#FFD700';
+                ctx.fillRect(x + 2, y + 2, rectW - 4, rectH - 4);
+            }
+        } catch (_) {}
     }
     
     // 🎯 应用UI缩放
@@ -791,14 +1167,12 @@ class BreakfastShop2D {
         const clearPlateBtn = document.getElementById('clearPlate');
         const completedFoodSlots = document.getElementById('completedFoodSlots');
         const plateItems = document.getElementById('plateItems');
-        const orderList = document.getElementById('orderList');
         
             if (this.debug) console.log('🔍 DOM元素检查结果:', {
             servePlateBtn: !!servePlateBtn,
             clearPlateBtn: !!clearPlateBtn,
             completedFoodSlots: !!completedFoodSlots,
-            plateItems: !!plateItems,
-            orderList: !!orderList
+            plateItems: !!plateItems
         });
         
         // 绑定查看餐盘按钮
@@ -896,13 +1270,25 @@ class BreakfastShop2D {
         this.loadBucketImage();
         this.loadQianImage(); // 加载钱币图片
         this.loadJuanLianMenImage(); // 加载卷帘门图片
+        this.loadYoukeImage(); // 加载youke占位图标
         // 预加载开始营业按钮背景图以减少首帧闪烁
         this.preloadYingyeImage();
         this.loadGuke1Image(); // 加载顾客图片 guke1
         this.loadGuke2Image(); // 加载顾客图片 guke2
         this.loadGuke3Image(); // 加载顾客图片 guke3
-        this.loadWooImage(); // 加载提示气泡 woo
+        this.loadWooImage(); // 加载提示气泡 qipao
+        this.loadYoutiao0Image(); // 订单图标：油条
+        this.loadDoujiang0Image(); // 订单图标：豆浆
+        this.loadCanpanImage(); // 餐盘底图
+        this.loadZhou0Image(); // 粥底缩略
+        this.loadSide0Images(); // 配菜0态
         this.loadHuImage(); // 加载豆浆倒入提示 hu
+        // 预加载 hu2 作为未选中状态的壶表现
+        this.hu2Image = new Image();
+        this.hu2Image.onload = () => { if (this.debug) console.log('✅ hu2 image loaded'); };
+        this.hu2Image.onerror = () => { console.warn('❌ Failed to load hu2 image: images/hu2.png'); };
+        this.hu2Image.style.imageRendering = 'pixelated';
+        this.hu2Image.src = 'images/hu2.png?t=' + Date.now();
         this.loadDoujiangzhuo2Image(); // 预加载豆浆桌第二图
         // 预加载配菜1版本覆盖图（像素完美）
         this.loadCongeeSideOverlays();
@@ -1022,19 +1408,19 @@ class BreakfastShop2D {
     }
 
     loadBackgroundImage() {
+        // 回退到 background1.png 以避免缺失的 background.png 报错
         this.loadImageWithRetry(
             'backgroundImage',
-            'images/background.png',
+            'images/background1.png',
             () => {
-            console.log('Background image loaded successfully');
-            console.log('Background dimensions:', this.backgroundImage.width, 'x', this.backgroundImage.height);
+                console.log('Background image (fallback to background1) loaded successfully');
             this.sprites.background = this.createBackground();
             this.sprites.youtiaoWorkspace = this.createYoutiaoWorkspace();
             this.sprites.doujiangWorkspace = this.createDoujiangWorkspace();
             this.sprites.congeeWorkspace = this.createCongeeWorkspace();
             this.render();
             },
-            { maxAttempts: 6, baseDelayMs: 400 }
+            { maxAttempts: 3, baseDelayMs: 300 }
         );
     }
 
@@ -1276,6 +1662,12 @@ class BreakfastShop2D {
         };
         this.dianfanbaoImage.style.imageRendering = 'pixelated';
         this.dianfanbaoImage.src = 'images/dianfanbao.png?t=' + Date.now();
+        // fanshao（饭勺）
+        this.fanshaoImage = new Image();
+        this.fanshaoImage.onload = () => { if (this.debug) console.log('✅ fanshao image loaded'); };
+        this.fanshaoImage.onerror = () => { console.warn('❌ Failed to load fanshao image: images/fanshao.png'); };
+        this.fanshaoImage.style.imageRendering = 'pixelated';
+        this.fanshaoImage.src = 'images/fanshao.png?t=' + Date.now();
 
         // 加载xiancai.png (咸菜)
         this.xiancaiImage = new Image();
@@ -1457,6 +1849,17 @@ class BreakfastShop2D {
         this.qianImage.src = 'images/qian.png?t=' + Date.now();
     }
 
+    // 加载youke.png（未接单顾客占位头像）
+    loadYoukeImage() {
+        try {
+            this.youkeImage = new Image();
+            this.youkeImage.onload = () => { if (this.debug) console.log('Youke image loaded'); };
+            this.youkeImage.onerror = () => { console.warn('Failed to load youke image'); };
+            this.youkeImage.style.imageRendering = 'pixelated';
+            this.youkeImage.src = 'images/youke.png?t=' + Date.now();
+        } catch (_) {}
+    }
+
     loadJuanLianMenImage() {
         this.juanLianMenImage = new Image();
         this.juanLianMenImage.onload = () => {
@@ -1474,18 +1877,80 @@ class BreakfastShop2D {
         this.juanLianMenImage.src = 'images/juanlianmen.png?t=' + Date.now();
     }
 
-    // 🎯 加载woo提示图片
+    // 🎯 加载提示气泡：用 qipao.png 替代原 woo.png
     loadWooImage() {
+        this.qipaoReady = false;
         this.wooImage = new Image();
         this.wooImage.onload = () => {
-            console.log('✅ Woo image loaded successfully');
+            console.log('✅ qipao image loaded successfully');
+            this.qipaoReady = true;
             this.render();
         };
         this.wooImage.onerror = () => {
-            console.error('❌ Failed to load woo image:', 'images/woo.png');
+            console.error('❌ Failed to load qipao image:', 'images/qipao.png');
+            this.qipaoReady = false;
         };
         this.wooImage.style.imageRendering = 'pixelated';
-        this.wooImage.src = 'images/woo.png?t=' + Date.now();
+        this.wooImage.src = 'images/qipao.png?t=' + Date.now();
+    }
+
+    // 加载订单缩略图素材：youtiao0 与 doujiang0
+    loadYoutiao0Image() {
+        this.youtiao0Image = new Image();
+        this.youtiao0Image.onload = () => console.log('✅ youtiao0 image loaded');
+        this.youtiao0Image.onerror = () => console.error('❌ Failed to load youtiao0 image');
+        this.youtiao0Image.style.imageRendering = 'pixelated';
+        this.youtiao0Image.src = 'images/youtiao0.png?t=' + Date.now();
+    }
+
+    loadDoujiang0Image() {
+        this.doujiang0Image = new Image();
+        this.doujiang0Image.onload = () => console.log('✅ doujiang0 image loaded');
+        this.doujiang0Image.onerror = () => console.error('❌ Failed to load doujiang0 image');
+        this.doujiang0Image.style.imageRendering = 'pixelated';
+        this.doujiang0Image.src = 'images/doujiang0.png?t=' + Date.now();
+    }
+
+    loadCanpanImage() {
+        this.canpanImage = new Image();
+        this.canpanImage.onload = () => console.log('✅ canpan image loaded');
+        this.canpanImage.onerror = () => console.error('❌ Failed to load canpan image');
+        this.canpanImage.style.imageRendering = 'pixelated';
+        this.canpanImage.src = 'images/canpan.png?t=' + Date.now();
+    }
+
+    loadZhou0Image() {
+        this.zhou0Image = new Image();
+        this.zhou0Image.onload = () => console.log('✅ zhou0 image loaded');
+        this.zhou0Image.onerror = () => console.error('❌ Failed to load zhou0 image');
+        this.zhou0Image.style.imageRendering = 'pixelated';
+        this.zhou0Image.src = 'images/zhou0.png?t=' + Date.now();
+    }
+
+    loadSide0Images() {
+        this.xiancai0Image = new Image();
+        this.xiancai0Image.onload = () => {};
+        this.xiancai0Image.onerror = () => {};
+        this.xiancai0Image.style.imageRendering = 'pixelated';
+        this.xiancai0Image.src = 'images/xiancai0.png?t=' + Date.now();
+
+        this.huangdou0Image = new Image();
+        this.huangdou0Image.onload = () => {};
+        this.huangdou0Image.onerror = () => {};
+        this.huangdou0Image.style.imageRendering = 'pixelated';
+        this.huangdou0Image.src = 'images/huangdou0.png?t=' + Date.now();
+
+        this.xiandan0Image = new Image();
+        this.xiandan0Image.onload = () => {};
+        this.xiandan0Image.onerror = () => {};
+        this.xiandan0Image.style.imageRendering = 'pixelated';
+        this.xiandan0Image.src = 'images/xiandan0.png?t=' + Date.now();
+
+        this.doufu0Image = new Image();
+        this.doufu0Image.onload = () => {};
+        this.doufu0Image.onerror = () => {};
+        this.doufu0Image.style.imageRendering = 'pixelated';
+        this.doufu0Image.src = 'images/doufu0.png?t=' + Date.now();
     }
 
     // 🎯 加载guke1图片（顾客素材）
@@ -2642,7 +3107,14 @@ class BreakfastShop2D {
             }
         }
 
-        // 已取消“收集桶”点击逻辑
+        // bucket中待放置油条：点击即直接放入完成餐食
+        if (this.gameState.currentView === 'youtiao') {
+            const pendingYoutiaoResult = this.checkPendingYoutiaoClick(adjustedX, adjustedY);
+            if (pendingYoutiaoResult) {
+                this.movePendingYoutiaoToCompleted(pendingYoutiaoResult.pending, pendingYoutiaoResult.index);
+                return;
+            }
+        }
 
         // 🎯 优先检查面团台区域（点击并按住-拖动-放开 逻辑起点）
         if (this.gameState.currentView === 'youtiao') {
@@ -2656,7 +3128,7 @@ class BreakfastShop2D {
                                 adjustedY >= doughAreaY && adjustedY <= doughAreaY + doughAreaHeight;
 
             if (inDoughArea) {
-                // 起始动作：若未开始，点击即开始揉面；若已 ready_to_fry，则直接进入拖拽
+                // 还原：idle -> startYoutiaoPreparation；ready_to_fry -> 下锅拖拽
                 if (this.gameState.youtiaoState.currentStep === 'idle') {
                     this.startYoutiaoPreparation();
                     return;
@@ -2665,7 +3137,7 @@ class BreakfastShop2D {
                     this.startDoughDrag(adjustedX, adjustedY);
                     return;
                 }
-                // kneading / stretching 阶段，记录当前点，配合 move 检测形态切换
+                // kneading / stretching 阶段记录坐标供 move 使用
                 this.gameState.youtiaoState.lastMouseX = adjustedX;
                 this.gameState.youtiaoState.lastMouseY = adjustedY;
                 return; // 阻止后续收集油条逻辑
@@ -2676,42 +3148,134 @@ class BreakfastShop2D {
         if (this.gameState.currentView === 'youtiao' && this.gameState.youtiaoState.youtiaoInOil.length > 0) {
             const youtiaoResult = this.checkYoutiaoClickForCollection(adjustedX, adjustedY);
             if (youtiaoResult) {
-                this.gameState.youtiaoState.collectingState = {
-                    isTracking: true,
-                    startX: adjustedX,
-                    startY: adjustedY,
-                    targetYoutiao: youtiaoResult.youtiao,
-                    targetIndex: youtiaoResult.index,
-                    moveThreshold: 30
-                };
-                console.log(`🎯 开始跟踪油条收集 - 索引: ${youtiaoResult.index}`);
+                // 直接开始拖拽：强制显示 youtiao1.4，且仅允许拖到 bucket
+                this.startYoutiaoLinking(youtiaoResult.youtiao, youtiaoResult.index, adjustedX, adjustedY, { forceImageIndex: 4, onlyBucket: true });
                 return;
             }
         }
         
-        // 豆浆制作区交互：点击hu2选中/取消；仅在选中壶时点击碗开始倒
+        // 豆浆制作区交互：点击wandui添加空碗；点击hu2选中/取消；仅在选中壶时点击碗开始倒
         if (this.gameState.currentView === 'doujiang') {
-            // 先允许点击 hu2 进行选中/取消
-            if (this.checkHu2Click(adjustedX, adjustedY)) {
-                this.gameState.doujiangState.kettleSelected = !this.gameState.doujiangState.kettleSelected;
-                // 选中时立即将壶位置置于鼠标处
-                this.gameState.doujiangState.kettleX = adjustedX;
-                this.gameState.doujiangState.kettleY = adjustedY;
-                this.showNotification(this.gameState.doujiangState.kettleSelected ? '已选中豆浆壶（hu2）' : '已取消选中豆浆壶');
+            // 优先检测碗堆点击：点击即添加空碗
+            if (this.checkWanduiClick(adjustedX, adjustedY)) {
+                this.addEmptyDoujiangBowl();
+                    return;
+                }
+            // 点击壶区域：选中/取消；若壶尚未准备，避免误判为收集桶提示
+            const hu2Hit = this.checkHu2Hit(adjustedX, adjustedY);
+            if (hu2Hit) {
+                const ds = this.gameState.doujiangState;
+                // 计算桌面右侧“放回基准位”
+                const tablePos = this.getDoujiangzhuoPosition();
+                const assetScale = 0.8;
+                const img = this.hu2Image && this.hu2Image.complete ? this.hu2Image : null;
+                const w = img ? img.width * this.backgroundScaleX * assetScale : 60;
+                const h = img ? img.height * this.backgroundScaleY * assetScale : 40;
+                // 左下偏移的放回基准位（与渲染一致）
+                const baseX = tablePos.x + tablePos.width - 220; // 扩大放回区域，左移20
+                const baseY = tablePos.y - h + 100; // 扩大放回区域，下移20
+                const clampedBaseX = Math.min(baseX, this.canvas.width - w - 2);
+                const clampedBaseY = Math.max(5, baseY);
+                const baseCenterX = clampedBaseX + w / 2;
+                const baseCenterY = clampedBaseY + h / 2;
+
+                if (!ds.kettleSelected) {
+                    // 选中壶
+                    ds.kettleSelected = true;
+                    ds.kettleX = adjustedX;
+                    ds.kettleY = adjustedY;
+                    this.showNotification('已选中豆浆壶', 1000);
+                } else {
+                    // 已选中：只有在壶“放回基准位”附近再次点击才取消选中
+                    const curX = ds.kettleX || baseCenterX;
+                    const curY = ds.kettleY || baseCenterY;
+                    const dx = Math.abs(curX - baseCenterX);
+                    const dy = Math.abs(curY - baseCenterY);
+                    const nearBase = dx <= 80 && dy <= 80; // 进一步放宽容差，扩大放回判定区
+                    if (nearBase) {
+                        ds.kettleSelected = false;
+                        ds.kettleX = baseCenterX;
+                        ds.kettleY = baseCenterY;
+                        this.showNotification('已放回豆浆桌', 1000);
+                    } else {
+                        // 未在基准位，不取消，仅更新位置提示用户放回
+                        ds.kettleX = adjustedX;
+                        ds.kettleY = adjustedY;
+                        this.showNotification('将壶放到碗堆右侧再点击以放回', 1200);
+                    }
+                }
                 return;
             }
 
-            // 仅当选中壶时，点击碗开始倒豆浆
-            const bowlResult = this.checkDoujiangBowlClick(adjustedX, adjustedY);
-            if (bowlResult && this.gameState.doujiangState.kettleSelected) {
-                this.startDoujiangPouring(bowlResult.bowl, bowlResult.index);
+            // 若当前已选中壶，且点击在豆浆桌区域，则直接将壶放回基准位
+            if (this.gameState.doujiangState.kettleSelected) {
+                const tablePos = this.getDoujiangzhuoPosition();
+                if (adjustedX >= tablePos.x && adjustedX <= tablePos.x + tablePos.width &&
+                    adjustedY >= tablePos.y && adjustedY <= tablePos.y + tablePos.height) {
+                    const assetScale = 0.8;
+                    const img = this.hu2Image && this.hu2Image.complete ? this.hu2Image : null;
+                    const w = img ? img.width * this.backgroundScaleX * assetScale : 60;
+                    const h = img ? img.height * this.backgroundScaleY * assetScale : 40;
+                    // 与默认绘制一致的左下偏移基准位
+                    const baseX = tablePos.x + tablePos.width - 200;
+                    const baseY = tablePos.y - h + 80;
+                    const clampedBaseX = Math.min(baseX, this.canvas.width - w - 2);
+                    const clampedBaseY = Math.max(5, baseY);
+                    const baseCenterX = clampedBaseX + w / 2;
+                    const baseCenterY = clampedBaseY + h / 2;
+                    this.gameState.doujiangState.kettleSelected = false;
+                    this.gameState.doujiangState.kettleX = baseCenterX;
+                    this.gameState.doujiangState.kettleY = baseCenterY;
+                    this.showNotification('已放回豆浆桌', 1000);
+                    return;
+                }
+            }
+
+            // 未选中壶时：点击任意“满碗豆浆”直接收集到完成的餐食；选中壶时禁止收集
+            if (!this.gameState.doujiangState.kettleSelected) {
+                const index = this.findDoujiangBowlIndexByPoint(adjustedX, adjustedY);
+                if (index >= 0) {
+                    const list = (this.gameState.cookingItems || []).filter(i => i.type === 'doujiang');
+                    const bowl = list[index];
+                    if (bowl && bowl.progress >= 1.0) {
+                        bowl.status = 'completed';
+                        this.gameState.completedFood.push({ type: 'doujiang', progress: 1.0, id: bowl.id || Date.now() });
+                        // 从cookingItems移除该碗
+                        const realIdx = this.gameState.cookingItems.indexOf(bowl);
+                        if (realIdx >= 0) this.gameState.cookingItems.splice(realIdx, 1);
+                        this.updateCompletedFoodArea();
+                        this.showNotification('✅ 已收集满碗豆浆到成品区', 1200);
+                        return;
+                    }
+                }
+            }
+
+            // 选中壶的情况下：按下开始长按计时，实时在 handleMouseMove 里检测壶与碗是否重合
+            if (this.gameState.doujiangState.kettleSelected) {
+                this._doujiangPress.isPressing = true;
+                this._doujiangPress.startAt = Date.now();
+                this._doujiangPress.pouringIndex = -1; // 尚未确定具体碗
                 return;
             }
         }
     }
 
     handleMouseUp(e) {
-        // 松开停止倒豆浆
+        // 松开：若在豆浆界面并处于“长按”判定，且壶与某碗重合达到阈值，则为该碗开始倒豆浆
+        if (this.gameState.currentView === 'doujiang' && this._doujiangPress && this._doujiangPress.isPressing) {
+            const pressMs = Date.now() - this._doujiangPress.startAt;
+            const index = this._doujiangPress.pouringIndex;
+            this._doujiangPress.isPressing = false;
+            this._doujiangPress.pouringIndex = -1;
+            this._doujiangPress.started = false;
+            if (this.gameState.doujiangState.kettleSelected) {
+                // 抬起时直接停止倒豆浆
+        this.stopDoujiangPouring();
+        }
+            // 未命中则不进行倒豆浆
+            return;
+        }
+        // 非豆浆或未处于长按逻辑：直接停止
         this.stopDoujiangPouring();
         
         // 重置揉面/拉伸的最后坐标，避免下一次误差
@@ -2720,10 +3284,19 @@ class BreakfastShop2D {
             this.gameState.youtiaoState.lastMouseY = 0;
         }
 
-        // 🎯 若正在拖拽收集油条：已取消“收集桶”逻辑，抬起即收集
+        // 🎯 若正在拖拽收集油条：只有在抬起位置落在 bucket 内才收集
         const collectingState = this.gameState.youtiaoState.collectingState;
         if (collectingState && collectingState.isTracking) {
-            this.collectYoutiaoByMovement(collectingState.targetYoutiao, collectingState.targetIndex);
+            const rect = this.canvas.getBoundingClientRect();
+            const x = (e.isNormalized ? e.normalizedX : (e.clientX - rect.left) * (this.canvas.width / rect.width));
+            const y = (e.isNormalized ? e.normalizedY : (e.clientY - rect.top) * (this.canvas.height / rect.height));
+            const bucket = this.getBucketPosition();
+            const inBucket = x >= bucket.x && x <= bucket.x + bucket.width && y >= bucket.y && y <= bucket.y + bucket.height;
+            if (inBucket) {
+                this.collectYoutiaoByMovement(collectingState.targetYoutiao, collectingState.targetIndex);
+            } else {
+                this.showNotification('请把油条拖到桶里再松手');
+            }
             this.gameState.youtiaoState.collectingState = {
                 isTracking: false,
                 startX: 0,
@@ -2861,7 +3434,7 @@ class BreakfastShop2D {
         this.updateOrderArea();
     }
     
-    // 🎯 更新完成食物区域 (kuang3)
+    // 🎯 更新完成食物区域 (kuang1 新布局)
     updateCompletedFoodArea() {
         const container = document.getElementById('completedFoodSlots');
         console.log('🍽️ 更新完成食物区域，容器：', container);
@@ -2889,7 +3462,7 @@ class BreakfastShop2D {
         });
     }
     
-    // 🎯 更新餐盘区域 (kuang2)
+    // 🎯 更新餐盘区域 (kuang2 新布局)
     updatePlateArea() {
         const container = document.getElementById('plateItems');
         if (!container) return;
@@ -2949,34 +3522,8 @@ class BreakfastShop2D {
         return positions;
     }
     
-    // 🎯 更新订单区域 (kuang1)
-    updateOrderArea() {
-        const container = document.getElementById('orderList');
-        if (!container) {
-            console.error('orderList容器未找到！');
-            return;
-        }
-        
-        container.innerHTML = '';
-        
-        const orders = this.gameState.pendingOrders || [];
-        console.log('更新订单区域，订单数量：', orders.length, orders);
-        
-        if (orders.length === 0) {
-            container.innerHTML = '<div class="empty-message">暂无待处理订单</div>';
-            return;
-        }
-        
-        orders.forEach((order, index) => {
-            console.log('创建订单元素：', index, order);
-            const orderElement = this.createOrderElement(order, index);
-            container.appendChild(orderElement);
-        });
-        
-        // 强制显示容器
-        container.style.display = 'block';
-        container.style.visibility = 'visible';
-    }
+    // 订单区域：已取消（不再显示旧第三框）
+    updateOrderArea() { /* no-op for new layout */ }
     
     // 🎯 创建食物槽
     createFoodSlot(food, index, source) {
@@ -2987,7 +3534,9 @@ class BreakfastShop2D {
         
         const foodIcon = this.getFoodIcon(food);
         const foodName = this.getFoodName(food.type);
-        const sidesText = food.sides ? `<br><small>${food.sides.join(',')}</small>` : '';
+        const sidesText = food.sides && food.sides.length > 0
+            ? `<br><small>${food.sides.slice(0,2).join('、')}${food.sides.length > 2 ? '<br>'+food.sides.slice(2,4).join('、') : ''}</small>`
+            : '';
         // 若是油条，优先用图片素材替代emoji
         let youtiaoImgHtml = '';
         if (food.type === 'youtiao') {
@@ -3008,17 +3557,41 @@ class BreakfastShop2D {
         if (source === 'plate') {
             // 餐盘中只显示图标，不显示名称
             const imgs = youtiaoImgHtml ? JSON.parse(youtiaoImgHtml) : null;
+            let iconHtml = imgs ? imgs.plate : `<span class=\"food-icon\" style=\"font-size: 1.5em; margin: 0;\">${foodIcon}</span>`;
+            if (food.type === 'congee') {
+                const bowlSrc = 'images/zhou.png';
+                const sideSrc = 'images/zhoucai.png';
+                // 餐盘用更小的重叠缩略图（整体略微放大）：容器 26px，主图 24px，配菜 14px
+                iconHtml = `
+                    <div class=\"congee-thumb\" style=\"position:relative;width:26px;height:26px;display:inline-block;vertical-align:middle;\">
+                        <img src=\"${bowlSrc}\" alt=\"粥\" style=\"position:absolute;left:0;top:1px;width:24px;height:auto;image-rendering:pixelated;\"/>
+                        <img src=\"${sideSrc}\" alt=\"菜\" style=\"position:absolute;right:-1px;bottom:-1px;width:14px;height:auto;image-rendering:pixelated;\"/>
+                    </div>`;
+            }
             slot.innerHTML = `
                 <div class="food-content" style="justify-content: center; align-items: center;">
-                    ${imgs ? imgs.plate : `<span class=\"food-icon\" style=\"font-size: 1.5em; margin: 0;\">${foodIcon}</span>`}
+                    ${iconHtml}
                 </div>
             `;
         } else {
             // 完成食物区域显示完整信息
         const imgs = youtiaoImgHtml ? JSON.parse(youtiaoImgHtml) : null;
+        // 默认图标（优先用油条素材），否则使用emoji
+        let iconHtml = imgs ? imgs.completed : `<span class=\"food-icon\">${foodIcon}</span>`;
+        // 粥+菜：使用重叠缩略图替换emoji
+        if (food.type === 'congee') {
+            const bowlSrc = 'images/zhou.png';
+            const sideSrc = 'images/zhoucai.png';
+            // 完成区略微放大：容器 32px，主图 30px，配菜 18px，右下角叠放
+            iconHtml = `
+                <div class=\"congee-thumb\" style=\"position:relative;width:32px;height:32px;display:inline-block;margin-right:6px;vertical-align:middle;\">
+                    <img src=\"${bowlSrc}\" alt=\"粥\" style=\"position:absolute;left:0;top:1px;width:30px;height:auto;image-rendering:pixelated;\"/>
+                    <img src=\"${sideSrc}\" alt=\"菜\" style=\"position:absolute;right:-2px;bottom:-2px;width:18px;height:auto;image-rendering:pixelated;\"/>
+                </div>`;
+        }
         slot.innerHTML = `
             <div class="food-content">
-                ${imgs ? imgs.completed : `<span class=\"food-icon\">${foodIcon}</span>`}
+                ${iconHtml}
                 <span class="food-name">${foodName}${sidesText}</span>
             </div>
         `;
@@ -3235,28 +3808,10 @@ class BreakfastShop2D {
         return names[type] || '未知';
     }
     
-    // 🎯 更新所有侧边栏区域
-    // 🎯 更新侧边栏
+    // 🎯 更新侧边栏（新两框布局：kuang1 完成食物 + kuang2 餐盘）
     updateSidebar() {
         this.updateCompletedFoodArea();
         this.updatePlateArea();
-        this.updateOrderArea();
-        
-        // 强制显示订单面板
-        const orderPanel = document.getElementById('orderPanel');
-        const orderList = document.getElementById('orderList');
-        
-        if (orderPanel) {
-            orderPanel.style.display = 'block';
-            orderPanel.style.visibility = 'visible';
-        }
-        
-        if (orderList) {
-            orderList.style.display = 'block';
-            orderList.style.visibility = 'visible';
-        }
-        
-        console.log('侧边栏更新完成，当前待处理订单：', this.gameState.pendingOrders?.length || 0);
     }
     
     // 🎯 检查餐盘是否能满足订单要求
@@ -3391,8 +3946,26 @@ class BreakfastShop2D {
         // 更新游戏状态
         this.gameState.money += totalPrice;
         this.gameState.reputation += 5;
+        // 顾客评价：根据速度与正确度给出星级
+        try {
+            const stars = this.calculateReviewStars(customer, order, providedFood);
+            const text = this.generateReviewText(stars, providedFood);
+            this.gameState.reviews.push({ stars, text, time: Date.now() });
+            // 仅保留最近50条
+            if (this.gameState.reviews.length > 50) this.gameState.reviews.shift();
+            // 更新平均评分
+            const sum = this.gameState.reviews.reduce((a, r) => a + r.stars, 0);
+            this.gameState.avgRating = (sum / this.gameState.reviews.length).toFixed(1);
+        } catch(_) {}
         // 🎯 记录完成订单数并检查是否达成目标
         this.gameState.completedOrdersToday = (this.gameState.completedOrdersToday || 0) + 1;
+        // 在完成第二个客人订单时，触发一次江鼓淡入淡出
+        try {
+            if (this.gameState.completedOrdersToday === 2) {
+                // 使用交叉淡入淡出（内部仍保持背景曲资源），但我们通过短时淡出再淡入实现“强调”效果
+                this.crossfadeToTrack('audio/jianggu.mp3', 800);
+            }
+        } catch(_) {}
         if (this.config.useOrderTargetEnd && this.gameState.completedOrdersToday >= this.config.dailyOrderTarget) {
             this.triggerEndOfDayByOrders();
         }
@@ -3461,6 +4034,32 @@ class BreakfastShop2D {
     }
 
     switchView(viewName) {
+        // 选中壶时，要求先将壶放回豆浆桌再允许切换界面
+        if (this.gameState && this.gameState.doujiangState && this.gameState.doujiangState.kettleSelected) {
+            // 若当前不在豆浆界面或壶未放在桌面固定位置，则拦截
+            if (this.gameState.currentView === 'doujiang') {
+                // 仅当壶坐标回到桌面右上固定基准附近才允许切换
+                const tablePos = this.getDoujiangzhuoPosition();
+                const assetScale = 0.8;
+                const img = this.hu2Image && this.hu2Image.complete ? this.hu2Image : null;
+                const w = img ? img.width * this.backgroundScaleX * assetScale : 60;
+                const h = img ? img.height * this.backgroundScaleY * assetScale : 40;
+                // 与渲染位置一致：左下偏移
+                const baseX = tablePos.x + tablePos.width - 220;
+                const baseY = tablePos.y - h + 100;
+                const clampedBaseX = Math.min(baseX, this.canvas.width - w - 2);
+                const clampedBaseY = Math.max(5, baseY);
+                const dx = Math.abs((this.gameState.doujiangState.kettleX || clampedBaseX) - (clampedBaseX + w / 2));
+                const dy = Math.abs((this.gameState.doujiangState.kettleY || clampedBaseY) - (clampedBaseY + h / 2));
+                if (dx > 20 || dy > 20) {
+                    this.showNotification('请先把壶放回豆浆桌', 1200);
+                    return;
+                }
+            } else {
+                this.showNotification('请先把壶放回豆浆桌', 1200);
+                return;
+            }
+        }
         // 🎯 如果点击的是当前界面，直接返回，不触发卷帘门动画
         if (viewName === this.gameState.currentView) {
             return;
@@ -3550,7 +4149,7 @@ class BreakfastShop2D {
         
         // 粥制作不自动开始，需要玩家手动点击
         if (foodType === 'congee') {
-            this.showNotification('请点击粥锅开始制作', 3000);
+            // 移除提示：请点击粥锅开始制作
             return;
         }
         
@@ -3596,6 +4195,22 @@ class BreakfastShop2D {
             this.checkCustomerClick(adjustedX, adjustedY);
             this.checkTableClick(adjustedX, adjustedY);
             this.checkKitchenClick(adjustedX, adjustedY);
+            // 检查是否点击了任意顾客气泡的交餐按钮
+            const hit = (this.gameState.customers || []).find(c => {
+                const b = c && c._deliverBtn; return b && adjustedX>=b.x && adjustedX<=b.x+b.w && adjustedY>=b.y && adjustedY<=b.y+b.h;
+            });
+            if (hit) {
+                const orderIndex = this.gameState.orders.findIndex(o => o.customer === hit && o.status === 'pending');
+                if (orderIndex >= 0) {
+                    if ((this.gameState.currentPlate||[]).length === 0) {
+                        this.showNotification('餐盘为空，无法交付！', 1200);
+                    } else {
+                        this.serveWholePlateToOrder(orderIndex, { type:'whole_plate', plateContents:[...this.gameState.currentPlate] });
+                        hit.state = 'leaving';
+                    }
+                }
+                return;
+            }
         } else {
             // 在制作区界面的特殊交互
             this.handleWorkspaceClick(adjustedX, adjustedY);
@@ -3617,15 +4232,16 @@ class BreakfastShop2D {
             if (x >= doughAreaX && x <= doughAreaX + doughAreaWidth && 
                 y >= doughAreaY && y <= doughAreaY + doughAreaHeight) {
                 // 面团准备台区域（贴合miantuan图片偏上位置）
-                if (this.gameState.youtiaoState.currentStep === 'idle') {
+                const step = this.gameState.youtiaoState.currentStep;
+                if (step === 'idle') {
+                    // 首次点击先开始制作流程
                     this.startYoutiaoPreparation();
-                } else if (this.gameState.youtiaoState.currentStep === 'kneading') {
-                    this.showNotification('请用鼠标画圈揉面团（需要2圈）');
-                } else if (this.gameState.youtiaoState.currentStep === 'stretching') {
-                    this.showNotification('请用鼠标上下移动拉伸面团');
-                } else if (this.gameState.youtiaoState.currentStep === 'ready_to_fry') {
-                    // 🎯 面团制作完成，可以拖拽到油锅
+                } else if (step === 'ready_to_fry') {
+                    // 只有在mian3阶段才允许生成面团条拖拽
                     this.startDoughDrag(x, y);
+                } else {
+                    // kneading 或 stretching 阶段：继续制作，不生成面团条
+                    this.showNotification('请继续把面团制作到mian3再下锅', 1200);
                 }
                 } else {
                 // 动态计算油锅区域
@@ -3637,23 +4253,23 @@ class BreakfastShop2D {
                     // 检查是否点击了熟透的油条来拖拽
                     this.handleYoutiaoClick(x, y);
                 } else {
-                    this.showNotification('请先制作面团，然后拖拽到油锅下锅');
+                    this.showNotification('拖拽面团到油锅', 1200);
                 }
                 } else {
                     // 🎯 移除批量收集功能 - 只保留单个收集
-                    this.showNotification('请拖拽单根油条收集，或制作新的面团');
+                    this.showNotification('拖拽油条收集', 1200);
                 }
             }
         } else if (view === 'doujiang') {
             // 豆浆制作区的特殊交互
             if (x >= 400 && x <= 1200 && y >= 780 && y <= 1080) {
-                this.showNotification('请长按空格键制作豆浆', 2000);
+                this.showNotification('长按碗倒豆浆', 1200);
             } else {
                 // 检查bucket收集区域（动态位置）
                 const bucketPos = this.getBucketPosition();
                 if (x >= bucketPos.x && x <= bucketPos.x + bucketPos.width && 
                     y >= bucketPos.y && y <= bucketPos.y + bucketPos.height) {
-                    this.showNotification('收集桶 - 制作完成的豆浆会自动放到成品槽', 2000);
+                    // 移除提示：成品自动入成品槽
                 }
             }
         } else if (view === 'congee') {
@@ -3677,6 +4293,10 @@ class BreakfastShop2D {
         if (currentStep === 'idle' && dianfanbaoItem && this.isPointInRect(x, y, dianfanbaoItem)) {
             this.gameState.congeeState.currentStep = 'dianfanbao_clicked';
             this.showNotification('✅ 电饭煲已启动！现在点击粥开始制作', 2000);
+            // 启动fanshao跟随鼠标
+            this.gameState.congeeState.fanshaoFollowing = true;
+            this.gameState.congeeState.fanshaoX = x;
+            this.gameState.congeeState.fanshaoY = y;
             return;
         }
 
@@ -3687,6 +4307,8 @@ class BreakfastShop2D {
                 id: Date.now(),
                 sides: []
             };
+            // 点击粥后，取消fanshao跟随
+            this.gameState.congeeState.fanshaoFollowing = false;
             // 🎯 刷新粥菜工作空间以更新粥的显示状态（从kongzhou切换为zhou）
             this.refreshCongeeWorkspace();
             this.showNotification('✅ 粥底已准备！现在点击配菜进行选择', 2000);
@@ -3695,11 +4317,30 @@ class BreakfastShop2D {
 
         // 步骤3&4：点击选择配菜
         if (currentStep === 'zhou_ready' || currentStep === 'selecting_sides') {
+            // 在配菜图标上按下：开始拖拽对应的“勺子覆盖图”
             for (const configItem of configItems) {
                 if (this.isPointInRect(x, y, configItem)) {
-                    this.addSideToCongee(configItem.name);
+                    const cs = this.gameState.congeeState;
+                    cs.draggingSideActive = true;
+                    cs.draggingSideName = configItem.name; // '咸菜'/'咸蛋'/'黄豆'/'豆腐'
+                    cs.draggingSideX = x;
+                    cs.draggingSideY = y;
+                    // 使用各自小勺素材：xiancaishao/xiandanshao/doufushao/huangdoushao
                     return;
                 }
+            }
+            // 在粥碗上按下：若有正在拖拽的配菜，则落下并添加
+            if (this.isPointInRect(x, y, zhouItem)) {
+                const cs = this.gameState.congeeState;
+                if (cs.draggingSideActive && cs.draggingSideName) {
+                    this.addSideToCongee(cs.draggingSideName);
+                    cs.draggingSideActive = false;
+                    cs.draggingSideName = null;
+                } else if (currentStep === 'selecting_sides') {
+                    // 没有拖拽则视为完成
+                    this.finalizeCongee();
+                }
+                return;
             }
         }
 
@@ -3859,6 +4500,20 @@ class BreakfastShop2D {
         document.body.appendChild(dragElement);
         this.dragState.draggedElement = dragElement;
 
+        // 跟随鼠标
+        const ensureFollow = () => {
+            if (!this.dragState.isDragging || !this.dragState.draggedElement) {
+                this.dragState.followRafId = null;
+                return;
+            }
+            const ex = this.dragState.pointerScreenX || e.clientX;
+            const ey = this.dragState.pointerScreenY || e.clientY;
+            this.dragState.draggedElement.style.transform = `translate(-50%, -50%) translate3d(${Math.round(ex)}px, ${Math.round(ey)}px, 0)`;
+            this.dragState.followRafId = requestAnimationFrame(ensureFollow);
+        };
+        if (this.dragState.followRafId) cancelAnimationFrame(this.dragState.followRafId);
+        this.dragState.followRafId = requestAnimationFrame(ensureFollow);
+
         this.showNotification(`拖拽粥配菜到餐盘！配菜：${congee.sides.join('、')}`, 2000);
     }
 
@@ -3947,16 +4602,12 @@ class BreakfastShop2D {
             }
         }
         
-        // 🎯 检查wandui点击，用于添加新的空碗
+        // 🎯 检查wandui点击，用于添加新的空碗（不再返回bowl位置信息，仅返回标志，由外层处理添加）
         const wanduiResult = this.checkWanduiClick(x, y);
         if (wanduiResult) {
-            if (doujiangItems.length < 6) {
-                return { bowl: null, index: doujiangItems.length }; // 新碗（最多6个）
-            } else {
-                // 已达到最大碗数，给出提示但不添加新碗
-                console.log('已达到最大碗数(6个)，无法添加新碗');
+            // 交由 handleMouseDown 外层逻辑负责添加新碗
+            this.onWanduiClicked && this.onWanduiClicked();
                 return null;
-            }
         }
         
         // 未点中任何碗：恢复豆浆桌到默认材质
@@ -4018,6 +4669,33 @@ class BreakfastShop2D {
         return false;
     }
 
+    // 🎯 添加一个新的空碗（最多6个）
+    addEmptyDoujiangBowl() {
+        try {
+            const currentCount = (this.gameState.cookingItems || []).filter(i => i.type === 'doujiang').length;
+            if (currentCount >= 6) {
+                this.showNotification('碗已满(6个)', 1000);
+                return;
+            }
+            const newItem = {
+                id: Date.now() + Math.random(),
+                type: 'doujiang',
+                startTime: Date.now(),
+                cookTime: 0,
+                progress: 0.0,
+                status: 'empty',
+                isMaking: false,
+                isPourHeld: false,
+                pourStartTime: null,
+                quality: 'perfect'
+            };
+            if (!Array.isArray(this.gameState.cookingItems)) this.gameState.cookingItems = [];
+            this.gameState.cookingItems.push(newItem);
+            this.showNotification('已添加空碗', 800);
+            this.render();
+        } catch (_) {}
+    }
+
     startPouring(item) {
         if (!item.isPourHeld) {
             item.isPourHeld = true;
@@ -4028,37 +4706,20 @@ class BreakfastShop2D {
 
     // 🎯 开始长按添加豆浆
     startDoujiangPouring(bowl, index) {
-        if (bowl === null) {
-            // 🎯 通过wandui点击添加新的空碗
-            const newItem = {
-                id: Date.now() + Math.random(),
-                type: 'doujiang',
-                startTime: Date.now(),
-                cookTime: 0, // 即时完成，不需要制作时间
-                progress: 0.01, // 从1%开始，显示为空碗
-                status: 'empty',
-                isMaking: false,
-                isPourHeld: false, // 🎯 不立即开始制作
-                pourStartTime: null,
-                quality: 'perfect'
-            };
-            this.gameState.cookingItems.push(newItem);
-            // 开始倒豆浆音效
-            this.playDoujiangSFX();
-            this.showNotification('添加了一个新碗！点击碗开始制作豆浆', 2000);
-        } else {
-            // 继续添加到现有碗
+        if (bowl === null || bowl === undefined) {
+            // 不再自动创建碗，提示用户先从碗堆添加
+            this.showNotification('请先点击碗堆添加空碗', 1200);
+            return;
+        }
+        // 命中已有碗：继续倒
             if (bowl.progress <= 0.02) {
-                // 🎯 空碗首次点击，开始制作豆浆
-                bowl.progress = 0.1; // 从10%开始
+            bowl.progress = 0.0;
                 bowl.status = 'cooking';
             }
             bowl.isPourHeld = true;
             bowl.pourStartTime = Date.now();
-            // 开始倒豆浆音效
             this.playDoujiangSFX();
-            this.showNotification('继续添加豆浆...松开鼠标停止', 1000);
-        }
+        this.showNotification('继续倒豆浆...松开鼠标停止', 1000);
     }
     
     // 🎯 停止添加豆浆
@@ -4077,11 +4738,16 @@ class BreakfastShop2D {
             }
         });
         
-        // 处理完成的豆浆项目（直接加入完成餐食）
+        // 处理完成的豆浆项目（直接以 doujiang4 形态加入完成餐食）
         completedItems.forEach(item => {
-            // 豆浆已满，移动到完成食物
-            item.status = 'completed';
-            this.gameState.completedFood.push(item);
+            const completed = {
+                type: 'doujiang',
+                quality: 100,
+                status: 'completed',
+                progress: 1.0,
+                id: item.id || Date.now()
+            };
+            this.gameState.completedFood.push(completed);
         });
 
         // 停止并重置豆浆音效，便于下次再次播放
@@ -4141,15 +4807,11 @@ class BreakfastShop2D {
         });
     }
 
-    // 🎯 检测 hu2 点击：用于选择/取消选择豆浆壶
-    checkHu2Click(x, y) {
-        try {
-            const b = this._hu2RenderBounds;
-            if (!b) return false;
-            // b.x/b.y 为绘制左上角坐标
-            const within = x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
-            return !!within;
-        } catch (_) { return false; }
+    // 壶点击检测：基于最近一次绘制的边界
+    checkHu2Hit(x, y) {
+        const b = this._hu2RenderBounds;
+        if (!b) return false;
+        return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
     }
 
     checkTableClick(x, y) {
@@ -4214,7 +4876,7 @@ class BreakfastShop2D {
         this.gameState.juanLianMenState.isAnimating = true;
         this.gameState.juanLianMenState.animationStartTime = Date.now();
         this.gameState.juanLianMenState.position = 0; // 从完全遮挡开始
-        this.gameState.juanLianMenState.animationDuration = 500; // 0.5秒
+        this.gameState.juanLianMenState.animationDuration = 300; // 加快至0.3秒
         this.gameState.juanLianMenState.animationType = 'up'; // 上升动画
         // 遮挡UI
         const ui = document.getElementById('ui');
@@ -4227,6 +4889,8 @@ class BreakfastShop2D {
         const mainUI = document.getElementById('mainUI');
         if (mainUI) mainUI.style.visibility = 'hidden';
         if (viewControls) viewControls.style.visibility = 'hidden';
+        // 统一遮挡右侧框与下侧按钮
+        this.applyShutterOverlay(true);
 
         // 播放卷帘门音效
         this.playShutterSFX();
@@ -4244,9 +4908,9 @@ class BreakfastShop2D {
         this.gameState.juanLianMenState.viewSwitched = false; // 重置界面切换标志
         
         // 动画阶段时长（毫秒）- 加快速度
-        this.gameState.juanLianMenState.downDuration = 300; // 下降0.3秒
-        this.gameState.juanLianMenState.pauseDuration = 50; // 停顿0.05秒
-        this.gameState.juanLianMenState.upDuration = 300; // 上升0.3秒
+        this.gameState.juanLianMenState.downDuration = 200; // 下降0.2秒
+        this.gameState.juanLianMenState.pauseDuration = 30; // 停顿0.03秒
+        this.gameState.juanLianMenState.upDuration = 200; // 上升0.2秒
         // 遮挡UI
         const ui = document.getElementById('ui');
         if (ui) ui.style.zIndex = '100';
@@ -4258,6 +4922,8 @@ class BreakfastShop2D {
         const mainUI = document.getElementById('mainUI');
         if (mainUI) mainUI.style.visibility = 'hidden';
         if (viewControls) viewControls.style.visibility = 'hidden';
+        // 统一遮挡右侧框与下侧按钮
+        this.applyShutterOverlay(true);
 
         // 播放卷帘门音效
         this.playShutterSFX();
@@ -4293,6 +4959,8 @@ class BreakfastShop2D {
                         viewControls.style.pointerEvents = 'auto';
                         viewControls.style.visibility = '';
                     }
+                    // 恢复右侧框与下侧按钮
+                    this.applyShutterOverlay(false);
                     const mainUI = document.getElementById('mainUI');
                     if (mainUI) mainUI.style.visibility = '';
             }
@@ -4349,6 +5017,8 @@ class BreakfastShop2D {
                     this.gameState.juanLianMenState.targetView = null; // 清理目标界面
                     this.gameState.juanLianMenState.viewSwitched = false; // 重置切换标志
                     console.log('卷帘门界面切换动画完成，卷帘门已消失');
+                    // 恢复右侧框与下侧按钮
+                    this.applyShutterOverlay(false);
                     // 动画结束恢复UI层级
                     const ui = document.getElementById('ui');
                     if (ui) ui.style.zIndex = '450';
@@ -4565,6 +5235,8 @@ class BreakfastShop2D {
     }
 
     spawnCustomer() {
+        // 顾客上限 = 天数 + 2
+        try { this.config.maxCustomers = Math.max(1, (this.gameState.day || 1) + 2); } catch(_) {}
         if (this.gameState.customers.length >= this.config.maxCustomers) return;
         
         console.log('重新设计的顾客寻路系统：生成顾客...');
@@ -4680,57 +5352,70 @@ class BreakfastShop2D {
     }
 
     generateOrder() {
-        const itemsMap = new Map(); // 使用Map来合并相同类型的食物
+        const itemsMap = new Map();
         const foodTypes = ['youtiao', 'doujiang', 'congee'];
         const numItems = Math.floor(Math.random() * 3) + 1;
         
+        // 先随机生成
         for (let i = 0; i < numItems; i++) {
             const type = foodTypes[Math.floor(Math.random() * foodTypes.length)];
-            
-            // 🎯 如果是粥且已经有粥了，跳过
-            if (type === 'congee' && itemsMap.has('congee')) {
-                continue;
-            }
-            
-            const quantity = type === 'congee' ? 1 : Math.floor(Math.random() * 2) + 1; // 粥固定为1份
+            if (type === 'congee' && itemsMap.has('congee')) continue; // 粥最多一碗
+
+            const quantity = type === 'congee' ? 1 : (Math.floor(Math.random() * 2) + 1);
             
             if (itemsMap.has(type)) {
-                // 如果已存在该类型，增加数量（粥不会走这个分支）
-                const existingItem = itemsMap.get(type);
-                existingItem.quantity += quantity;
+                itemsMap.get(type).quantity += quantity;
             } else {
-                // 创建新的食物项
-                const item = {
-                    type: type,
-                    quantity: quantity,
-                    special: Math.random() < 0.2
-                };
-                
-                // 🎯 如果是粥，添加小菜配菜（固定1份粥）
+                const item = { type, quantity, special: Math.random() < 0.2 };
                 if (type === 'congee') {
                     const sideOptions = ['咸菜', '豆腐', '咸蛋', '黄豆'];
-                    const numSides = Math.floor(Math.random() * 2) + 1; // 1-2种小菜
+                    const numSides = Math.floor(Math.random() * 2) + 1; // 1-2种配菜
                     item.sides = [];
-                    
                     for (let j = 0; j < numSides; j++) {
-                        const sideIndex = Math.floor(Math.random() * sideOptions.length);
-                        const side = sideOptions[sideIndex];
-                        if (!item.sides.includes(side)) {
-                            item.sides.push(side);
-                        }
+                        const side = sideOptions[Math.floor(Math.random() * sideOptions.length)];
+                        if (!item.sides.includes(side)) item.sides.push(side);
+                        if (item.sides.length >= 2) break; // 配菜最多两种
                     }
                 }
-                
                 itemsMap.set(type, item);
             }
         }
         
-        // 将Map转换为数组
-        const items = Array.from(itemsMap.values());
-        
-        const totalValue = items.reduce((sum, item) => 
-            sum + this.config.foodPrices[item.type] * item.quantity, 0);
-        
+        // 约束：豆浆与油条数量之和最大为4
+        const limitCombined = 4;
+        const youtiaoItem = itemsMap.get('youtiao');
+        const doujiangItem = itemsMap.get('doujiang');
+        const curY = youtiaoItem ? youtiaoItem.quantity : 0;
+        const curD = doujiangItem ? doujiangItem.quantity : 0;
+        const over = Math.max(0, curY + curD - limitCombined);
+        if (over > 0) {
+            // 优先减少数量较大的那个；若相等随机减少
+            const first = (curY >= curD) ? 'youtiao' : 'doujiang';
+            const second = (first === 'youtiao') ? 'doujiang' : 'youtiao';
+            let remainToReduce = over;
+            const reduceFrom = (key, n) => {
+                const it = itemsMap.get(key);
+                if (!it) return 0;
+                const can = Math.min(it.quantity, n);
+                it.quantity -= can;
+                if (it.quantity <= 0) itemsMap.delete(key);
+                return n - can;
+            };
+            remainToReduce = reduceFrom(first, remainToReduce);
+            if (remainToReduce > 0) reduceFrom(second, remainToReduce);
+        }
+
+        // 粥最多一碗（已在前面保证）；配菜最多两种（已在添加时保证）
+
+        let items = Array.from(itemsMap.values());
+        // 订单中至少包含油条或豆浆
+        const hasY = items.some(i => i.type === 'youtiao');
+        const hasD = items.some(i => i.type === 'doujiang');
+        if (!hasY && !hasD) {
+            const addType = Math.random() < 0.5 ? 'youtiao' : 'doujiang';
+            items.push({ type: addType, quantity: 1, special: false });
+        }
+        const totalValue = items.reduce((sum, item) => sum + this.config.foodPrices[item.type] * item.quantity, 0);
         return { items, totalValue, complexity: items.length > 2 ? 'complex' : 'simple' };
     }
 
@@ -4763,8 +5448,10 @@ class BreakfastShop2D {
         this.gameState.orders.push(newOrder);
         this.gameState.pendingOrders.push(newOrder);
         
+        // 临时：使用emoji代替具体种类文字
+        const emojiMap = { youtiao: '🥖', doujiang: '🥛', congee: '🥣' };
         const orderDesc = customer.order.items.map(item => 
-            this.getFoodName(item.type) + 'x' + item.quantity).join(', ');
+            (emojiMap[item.type] || '🍽️') + 'x' + item.quantity).join(', ');
         this.showNotification('新订单：' + orderDesc);
         
         console.log('新订单已添加：', newOrder);
@@ -4775,15 +5462,11 @@ class BreakfastShop2D {
     }
 
     startCooking(foodType) {
-        // 油条不能一键制作，需要手动操作
-        if (foodType === 'youtiao') {
-            this.showNotification('油条需要手动制作！请点击面团准备台开始');
-            return;
-        }
+        // 允许油条进入一键制作流程（不再弹出手动制作提示）
 
         // 粥配菜不能一键制作，需要手动点击粥锅开始
         if (foodType === 'congee') {
-            this.showNotification('粥配菜需要手动制作！请点击粥锅开始');
+            // 移除提示：粥配菜需要手动制作！请点击粥锅开始
             return;
         }
 
@@ -4936,6 +5619,13 @@ class BreakfastShop2D {
         }
         const topControls = document.getElementById('topGameControls');
         if (topControls) topControls.style.display = 'none';
+        // 开始营业后，显示右侧栏与下侧按钮
+        this.setPreStartUIHidden(false);
+        // 开始营业时移除卷帘门背景，避免遮挡点击
+        try {
+            const bd = document.getElementById('summaryBackdrop');
+            if (bd) { bd.parentNode.removeChild(bd); }
+        } catch(_) {}
         
         // 开始前：清空所有顾客与订单、进行区状态
         this.gameState.customers = [];
@@ -5016,9 +5706,11 @@ class BreakfastShop2D {
         this.updateOrders(deltaTime); // 🎯 新增：更新订单耐心值
         this.updateTime(deltaTime);
         
-        // 定期生成顾客（基于当前天数难度的生成率）
+        // 定期生成顾客：天数越多，出现越频繁（基础生成率乘以天数因子）
+        const dayFactor = Math.max(1, (this.gameState.day || 1) * 0.2 + 1); // 第1天=1.2，第5天=2.0
+        const spawnRate = (this.config.customerSpawnRate || 0.2) * dayFactor;
         if (this.gameState.customers.length < this.config.maxCustomers && 
-            Math.random() < this.config.customerSpawnRate * deltaTime / 1000) {
+            Math.random() < spawnRate * deltaTime / 1000) {
             this.spawnCustomer();
             console.log(`🎯 生成新顾客，当前顾客数量: ${this.gameState.customers.length}/${this.config.maxCustomers}`);
         }
@@ -5056,7 +5748,7 @@ class BreakfastShop2D {
         
         // 定义统一的顾客行走水平线
         const walkingLine = this.getCustomerWalkingLine();
-        
+
         // 使用for循环倒序遍历，避免在删除元素时索引问题
         for (let i = this.gameState.customers.length - 1; i >= 0; i--) {
             const customer = this.gameState.customers[i];
@@ -5197,7 +5889,7 @@ class BreakfastShop2D {
             // 已点单顾客的耐心消耗
             if (customer.state === 'waiting' && customer.hasOrdered) {
                 customer.patience -= deltaTime;
-                customer.satisfaction = Math.max(0, (customer.patience / customer.maxPatience) * 100);
+                customer.satisfaction = Math.max(0, Math.min(100, (customer.patience / customer.maxPatience) * 100));
                 
                 if (customer.patience <= 0) {
                     this.releaseCustomerPosition(customer); // 🎯 释放位置
@@ -5321,54 +6013,16 @@ class BreakfastShop2D {
         // 实时更新订单进度条显示
         this.updateOrderProgressBars();
         
-        // 如果有订单发生变化，更新UI
+        // 如果有订单发生变化，仅更新两框UI（不再刷新订单列表框）
         if (this.needUpdateOrderUI) {
-            this.updateOrderArea();
+            this.updateCompletedFoodArea();
+            this.updatePlateArea();
             this.needUpdateOrderUI = false;
         }
     }
 
     // 🎯 实时更新订单进度条显示
-    updateOrderProgressBars() {
-        const orderContainer = document.getElementById('orderList');
-        if (!orderContainer) return;
-        
-        const orderElements = orderContainer.querySelectorAll('.order-item');
-        
-        orderElements.forEach((orderElement, index) => {
-            const orderIndex = parseInt(orderElement.dataset.orderIndex);
-            const order = this.gameState.pendingOrders[orderIndex];
-            
-            if (!order) return;
-            
-            // 计算耐心值百分比
-            const patiencePercent = Math.max(0, (order.currentPatience / order.maxPatience) * 100);
-            const patienceColor = patiencePercent > 50 ? '#4CAF50' : patiencePercent > 25 ? '#FFA500' : '#FF4444';
-            
-            // 更新进度条
-            const patienceBar = orderElement.querySelector('.patience-bar');
-            if (patienceBar) {
-                patienceBar.style.width = `${patiencePercent}%`;
-                patienceBar.style.backgroundColor = patienceColor;
-            }
-            
-            // 更新耐心值文本
-            const patienceText = orderElement.querySelector('.patience-text');
-            if (patienceText) {
-                const remainingSeconds = Math.max(0, Math.ceil(order.currentPatience / 1000));
-                patienceText.textContent = `耐心值: ${remainingSeconds}s`;
-                
-                // 当耐心值很低时，添加警告样式
-                if (patiencePercent <= 25) {
-                    patienceText.style.color = '#FF4444';
-                    patienceText.style.fontWeight = 'bold';
-                } else {
-                    patienceText.style.color = '#666';
-                    patienceText.style.fontWeight = 'normal';
-                }
-            }
-        });
-    }
+    updateOrderProgressBars() { /* no-op: 已取消订单列表UI */ }
 
     removeCustomer(customer) {
         console.log(`🎯 移除顾客 #${customer.id}`);
@@ -5436,15 +6090,18 @@ class BreakfastShop2D {
             } else if (item.type === 'congee') {
                 this.updateCongeeCooking(item, deltaTime);
             } else {
-                // 其他食物的常规制作逻辑
+                // 其他食物的常规制作逻辑（显式排除油条：油条不走自动完成，需手动流程）
+                if (item.type === 'youtiao') {
+                    return; // 避免误将油条加入completedFood
+                }
                 const elapsed = Date.now() - item.startTime;
                 item.progress = Math.min(1, elapsed / item.cookTime);
                 
                 if (elapsed >= item.cookTime && item.status === 'cooking') {
-                                    item.status = 'completed';
-                this.gameState.completedFood.push(item);
-                this.showNotification(this.getFoodName(item.type) + '制作完成！');
-                this.updateCompletedFoodArea();
+                    item.status = 'completed';
+                    this.gameState.completedFood.push(item);
+                    this.showNotification(this.getFoodName(item.type) + '制作完成！');
+                    this.updateCompletedFoodArea();
                 }
             }
         });
@@ -5533,13 +6190,8 @@ class BreakfastShop2D {
     }
 
     endPhase() {
-        if (this.gameState.phase === 'morning') {
-            this.gameState.phase = 'evening';
-            this.timeLeft = this.config.dayDuration;
-            this.showNotification('现在是日落时段');
-        } else {
+        // 取消日落时段：倒计时结束直接结算并切换到下一天
             this.endDay();
-        }
     }
 
     endDay() {
@@ -5548,8 +6200,14 @@ class BreakfastShop2D {
         this.gameState.day++;
         
         this.showNotification('第' + (this.gameState.day - 1) + '天结算完成！获得¥' + baseEarnings, 5000);
+        // 关卡结束：将豆浆壶复位到默认位置
+        try { this.resetKettleToBasePosition(); } catch(_) {}
         
         this.gameState.isRunning = false;
+        // 🎬 日终播放卷帘门下降-停顿-上升动画并在遮挡时显示结算
+        this.gameState.juanLianMenState.targetView = 'summary';
+        this._pendingShowSummaryAfterShutter = true;
+        this.startJuanLianMenViewSwitchAnimation();
         // 重置当日统计
         this.gameState.completedOrdersToday = 0;
         this.gameState.customers = [];
@@ -5572,6 +6230,33 @@ class BreakfastShop2D {
         if (topControls) topControls.style.display = '';
         // 🎵 营业结束，淡出并停止背景音乐
         this.fadeOutAndStopBGM();
+    }
+
+    // 🎯 将豆浆壶放回豆浆桌默认位置
+    resetKettleToBasePosition() {
+        if (!this.gameState || !this.gameState.doujiangState) return;
+        const ds = this.gameState.doujiangState;
+        const tablePos = this.getDoujiangzhuoPosition();
+        if (!tablePos) return;
+        const assetScale = 0.8;
+        const img = (this.hu2Image && this.hu2Image.complete) ? this.hu2Image : null;
+        let w = 60, h = 40;
+        if (img && this.backgroundScaleX && this.backgroundScaleY) {
+            w = img.width * this.backgroundScaleX * assetScale;
+            h = img.height * this.backgroundScaleY * assetScale;
+        }
+        const baseX = tablePos.x + tablePos.width - 200;
+        const baseY = tablePos.y - h + 80;
+        const clampedBaseX = Math.min(baseX, this.canvas.width - w - 2);
+        const clampedBaseY = Math.max(5, baseY);
+        const baseCenterX = clampedBaseX + w / 2;
+        const baseCenterY = clampedBaseY + h / 2;
+        ds.kettleSelected = false;
+        ds.kettleX = baseCenterX;
+        ds.kettleY = baseCenterY;
+        this.gameState.doujiangzhuoUseAlt = false;
+        try { this.sprites.doujiangWorkspace = this.createDoujiangWorkspace(); } catch(_) {}
+        this.render();
     }
 
 
@@ -5657,10 +6342,7 @@ class BreakfastShop2D {
     startWholePlateDrag(e) {
         e.preventDefault();
         
-        if (this.gameState.currentPlate.length === 0) {
-            this.showNotification('餐盘是空的！请先添加食物到餐盘');
-            return;
-        }
+        // 允许空餐盘也进入拖拽（仅用于视觉跟随）；交付时会二次校验是否为空
         
         this.dragState.isDragging = true;
         this.dragState.draggedItem = { 
@@ -5670,33 +6352,20 @@ class BreakfastShop2D {
         this.dragState.startX = e.clientX;
         this.dragState.startY = e.clientY;
 
-        // 创建拖拽的视觉元素 - 整个餐盘的缩小版
+        // 创建拖拽的视觉元素 - 使用 canpan 缩略图跟随鼠标
         const dragElement = document.createElement('div');
+        const thumbSize = 120; // 拖动可见尺寸
         dragElement.style.cssText = `
             position: fixed;
             pointer-events: none;
             z-index: 1000;
-            width: 80px;
-            height: 80px;
-            background: linear-gradient(135deg, #f0f0f0, #e0e0e0);
-            border: 3px solid #8B4513;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            font-weight: bold;
-            color: #333;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            width: ${thumbSize}px;
+            height: ${thumbSize}px;
+            background: url('images/canpan.png') no-repeat center/contain;
+            image-rendering: pixelated;
         `;
-        
-        dragElement.style.left = (e.clientX - 40) + 'px';
-        dragElement.style.top = (e.clientY - 40) + 'px';
+        dragElement.style.transform = `translate(-50%, -50%) translate3d(${Math.round(e.clientX)}px, ${Math.round(e.clientY)}px, 0)`;
         dragElement.classList.add('dragging');
-        
-        // 显示餐盘内容概要
-        const foodIcons = this.gameState.currentPlate.map(food => this.getFoodIcon(food)).join('');
-        dragElement.innerHTML = `<div style="text-align: center;">${foodIcons}<br><span style="font-size: 10px;">餐盘</span></div>`;
         
         document.body.appendChild(dragElement);
         this.dragState.draggedElement = dragElement;
@@ -5708,7 +6377,7 @@ class BreakfastShop2D {
             currentPlate.style.cursor = 'grabbing';
         }
         
-        this.showNotification(`拖拽整个餐盘到订单上交餐！`);
+        this.showNotification(`拖拽餐盘到顾客或其气泡处交餐`, 1000);
     }
 
     startPlateDrag(e, food, index) {
@@ -5733,17 +6402,17 @@ class BreakfastShop2D {
         // 标记原始元素
         e.target.style.opacity = '0.3';
         
-        // 提示拖拽交餐方式
+        // 简化提示，缩短时长
         if (this.gameState.currentView === 'main') {
-            this.showNotification(`拖拽 ${this.getFoodName(food.type)} 到顾客身上交餐`);
+            this.showNotification(`拖拽到顾客交餐`, 1000);
         } else {
-            this.showNotification(`请先切换到大厅界面，然后拖拽给顾客`);
+            this.showNotification(`切到大厅再拖拽`, 1000);
         }
     }
 
     handleMouseMove(e) {
         // youtiao 专属移动逻辑；但在 doujiang 视图需要跟踪壶位置
-        if (this.gameState.currentView !== 'youtiao' && this.gameState.currentView !== 'doujiang') {
+        if (this.gameState.currentView !== 'youtiao' && this.gameState.currentView !== 'doujiang' && this.gameState.currentView !== 'congee') {
             return;
         }
 
@@ -5761,31 +6430,49 @@ class BreakfastShop2D {
             adjustedY = y * scaleY;
         }
 
-        // 🎯 在豆浆视图下，若选中壶，则让 hu2 跟随鼠标
+        // 在粥界面，更新fanshao/配菜拖拽跟随位置
+        if (this.gameState.currentView === 'congee' && this.gameState.congeeState) {
+            if (this.gameState.congeeState.fanshaoFollowing) {
+                this.gameState.congeeState.fanshaoX = adjustedX;
+                this.gameState.congeeState.fanshaoY = adjustedY;
+            }
+            if (this.gameState.congeeState.draggingSideActive) {
+                this.gameState.congeeState.draggingSideX = adjustedX;
+                this.gameState.congeeState.draggingSideY = adjustedY;
+            }
+        }
+
+        // 🎯 在豆浆视图下，若选中壶，则让壶跟随鼠标；当壶框和碗框重叠时立即开始倒豆浆；分离时停止
         if (this.gameState.currentView === 'doujiang' && this.gameState.doujiangState.kettleSelected) {
             this.gameState.doujiangState.kettleX = adjustedX;
             this.gameState.doujiangState.kettleY = adjustedY;
+            const hitIndex = this.findOverlappedDoujiangBowlIndex(adjustedX, adjustedY);
+            const list = (this.gameState.cookingItems || []).filter(i => i.type==='doujiang');
+            if (hitIndex >= 0 && list[hitIndex]) {
+                const bowl = list[hitIndex];
+                if (!bowl.isPourHeld) {
+                    // 开始倒豆浆（无需长按）
+                    if (bowl.progress <= 0.02) { bowl.status = 'cooking'; }
+                    bowl.isPourHeld = true;
+                    bowl.pourStartTime = Date.now();
+                    this.playDoujiangSFX();
+                }
+            } else {
+                // 没有命中任意碗则立即停止倒
+                this.stopPouring();
+            }
         }
 
         // 🎯 跟踪状态下：若在面团阶段，结合“按住-拖动”逻辑切换形态
         if (this.gameState.currentView === 'youtiao') {
-            const collectingState = this.gameState.youtiaoState.collectingState;
-            if (collectingState.isTracking) {
-                return;
+        const collectingState = this.gameState.youtiaoState.collectingState;
+        if (collectingState.isTracking) {
+            return;
             }
         }
 
         // 面团形态切换：按住并拖动
-        if (this.gameState.currentView === 'youtiao' && this.gameState.youtiaoState.isPreparingYoutiao) {
-            if (this.gameState.youtiaoState.currentStep === 'kneading') {
-                this.handleKneadingMotion(adjustedX, adjustedY);
-                return;
-            }
-            if (this.gameState.youtiaoState.currentStep === 'stretching') {
-                this.handleStretchingMotion(adjustedX, adjustedY);
-            return;
-            }
-        }
+        // 取消揉面/拉伸交互
 
         // 原有的面团制作逻辑（仅在非收集跟踪状态下执行）
         if (!this.gameState.youtiaoState.isPreparingYoutiao) {
@@ -5809,6 +6496,12 @@ class BreakfastShop2D {
         if (this.dragState.draggedElement) {
             try { document.body.removeChild(this.dragState.draggedElement); } catch (_) {}
         }
+        // 补充：清理所有遗留的 dragging 元素（未跟随/孤儿）
+        try {
+            document.querySelectorAll('.dragging').forEach(el => {
+                try { el.parentNode.removeChild(el); } catch(_) { el.style.display = 'none'; }
+            });
+        } catch(_) {}
 
         // 恢复原始元素透明度
         const slots = document.querySelectorAll('.food-slot');
@@ -5818,6 +6511,53 @@ class BreakfastShop2D {
         const rect = this.canvas.getBoundingClientRect();
         const adjustedX = e.isNormalized ? e.normalizedX : (e.clientX - rect.left) * (this.canvas.width / rect.width);
         const adjustedY = e.isNormalized ? e.normalizedY : (e.clientY - rect.top) * (this.canvas.height / rect.height);
+
+        // 若拖拽的是整个餐盘，且放在顾客或顾客气泡上，则顾客接收餐食并离场
+        if (this.dragState.draggedItem && this.dragState.draggedItem.type === 'whole_plate') {
+            const targetCustomer = this.findCustomerAtPosition(adjustedX, adjustedY);
+            let hit = null;
+            if (targetCustomer && targetCustomer.hasOrdered && targetCustomer.state === 'waiting') {
+                hit = targetCustomer;
+            } else {
+                // 命中气泡范围
+                const candidate = (this.gameState.customers || []).find(c => {
+                    const r = this.getCustomerBubbleRect(c);
+                    if (!r) return false;
+                    return adjustedX >= r.x && adjustedX <= r.x + r.width && adjustedY >= r.y && adjustedY <= r.y + r.height;
+                });
+                if (candidate) hit = candidate;
+            }
+            if (hit) {
+                // 使用整盘交付逻辑
+                const orderIndex = this.gameState.orders.findIndex(o => o.customer === hit && o.status === 'pending');
+                if (orderIndex >= 0) {
+                    this.serveWholePlateToOrder(orderIndex, this.dragState.draggedItem);
+                    // 让顾客离场
+                    hit.state = 'leaving';
+                }
+                this.resetDragState();
+                return;
+            }
+        }
+
+        // 若拖拽的是油条（从油锅），判定是否进入bucket，否则回到油锅
+        if (this.dragState.draggedItem && this.dragState.draggedItem.type === 'youtiao_from_oil') {
+            const bucketPos = this.getBucketPosition();
+            if (adjustedX >= bucketPos.x && adjustedX <= bucketPos.x + bucketPos.width &&
+                adjustedY >= bucketPos.y && adjustedY <= bucketPos.y + bucketPos.height) {
+                // 成功拖入 bucket：转为 pendingYoutiao
+                const { youtiao, index } = this.dragState.draggedItem;
+                this.collectYoutiaoByMovement(youtiao, index);
+            } else {
+                // 若只允许拖到桶，则直接提示并不收集
+                if (this.dragState.draggedItem.onlyBucket) {
+                    this.showNotification('请拖到收集桶中', 800);
+                } else {
+                    // 拖拽失败：回到油锅（不改变油锅数组）
+                    this.showNotification('未拖入桶内，油条返回油锅', 1000);
+                }
+            }
+        }
 
         // 🎯 处理面团拖拽结束（采用油条拖拽风格）
         if (this.dragState.draggedItem && this.dragState.draggedItem.type === 'dough_to_oil') {
@@ -5840,14 +6580,16 @@ class BreakfastShop2D {
         if (this.dragState.draggedItem && this.dragState.draggedItem.type === 'youtiao_from_oil') {
             // 首先检查是否放到餐盘上
             const plateArea = document.getElementById('currentPlate');
-            if (plateArea && plateArea.classList.contains('drop-zone')) {
+            if (!this.dragState.draggedItem.onlyBucket && plateArea && plateArea.classList.contains('drop-zone')) {
                 this.addYoutiaoToPlate(this.dragState.draggedItem);
                 plateArea.classList.remove('drop-zone');
                 this.resetDragState();
                 return;
             }
             // 否则按原来的逻辑处理
-            this.handleYoutiaoDropped(adjustedX, adjustedY);
+            if (!this.dragState.draggedItem.onlyBucket) {
+                this.handleYoutiaoDropped(adjustedX, adjustedY);
+            }
             this.resetDragState();
             return;
         }
@@ -5870,19 +6612,12 @@ class BreakfastShop2D {
             }
         }
 
-        // 检查是否拖拽到顾客处（仅在主界面）
-        if (this.gameState.currentView === 'main') {
+        // 检查是否拖拽到顾客处（放宽到任意界面，若有顾客判定命中则交付）
             const targetCustomer = this.findCustomerAtPosition(adjustedX, adjustedY);
             if (targetCustomer && targetCustomer.hasOrdered && targetCustomer.state === 'waiting') {
                 this.serveToCustomer(targetCustomer, this.dragState.draggedItem);
                 this.resetDragState();
                 return;
-            }
-        } else {
-            // 如果不在大厅界面但试图拖拽到顾客，给出提示
-            if (this.dragState.draggedItem) {
-                this.showNotification('只能在大厅界面拖拽食物到顾客身上交餐！请先切换到大厅界面。');
-            }
         }
 
         // 检查是否在粥制作界面拖拽食物到粥碗
@@ -5969,8 +6704,10 @@ class BreakfastShop2D {
         const youtiao = draggedItem.youtiao;
         const pendingIndex = draggedItem.pendingIndex;
         
-        // 直接添加到完成食物列表
-        this.gameState.completedFood.push(youtiao);
+        // 直接添加到完成食物列表（确保来自油锅流程）
+        if (youtiao && youtiao.type === 'youtiao') {
+            this.gameState.completedFood.push(youtiao);
+        }
         
         // 从待放置列表中移除
         this.gameState.youtiaoState.pendingYoutiao.splice(pendingIndex, 1);
@@ -6028,6 +6765,55 @@ class BreakfastShop2D {
             return x >= customerLeft && x <= customerRight && 
                    y >= customerTop && y <= customerBottom;
         });
+    }
+
+    // 计算顾客气泡的矩形范围（与渲染一致的估算）
+    getCustomerBubbleRect(customer) {
+        if (!customer || !customer.hasOrdered || customer.state !== 'waiting') return null;
+        const drawW = (customer.width && Number.isFinite(customer.width)) ? customer.width : 180;
+        const drawH = (customer.height && Number.isFinite(customer.height)) ? customer.height : 360;
+        const bubbleW = Math.max(56, Math.round(drawW * 0.5)) * 3;
+        const bubbleH = Math.max(40, Math.round(drawH * 0.18)) * 3;
+        const bubbleX = Math.round(customer.x + drawW / 2 - bubbleW / 2);
+        const bubbleY = Math.round(customer.y - bubbleH - 8);
+        return { x: bubbleX, y: bubbleY, width: bubbleW, height: bubbleH };
+    }
+
+    // 调试：渲染餐盘与顾客判定范围
+    renderPlateDragDebug() {
+        if (!this.debug) return; // 仅在debug模式下渲染
+        this.ctx.save();
+        this.ctx.imageSmoothingEnabled = false;
+        // 餐盘判定点：currentPlate 的中心作为拖拽基准
+        const plateEl = document.getElementById('currentPlate');
+        if (plateEl) {
+            const rect = this.canvas.getBoundingClientRect();
+            const plateRect = plateEl.getBoundingClientRect();
+            // 将DOM坐标换算为canvas坐标
+            const scaleX = this.canvas.width / rect.width;
+            const scaleY = this.canvas.height / rect.height;
+            const px = (plateRect.left - rect.left + plateRect.width / 2) * scaleX;
+            const py = (plateRect.top - rect.top + plateRect.height * 0.7) * scaleY; // 偏下的判定位置
+            this.ctx.strokeStyle = 'rgba(255,128,0,0.9)';
+            this.ctx.lineWidth = 2;
+            this.ctx.strokeRect(Math.round(px - 20), Math.round(py - 20), 40, 40);
+            // 标注可移动区域（kuang2内部）：以 currentPlate 外接矩形为蓝框
+            this.ctx.strokeStyle = 'rgba(0,128,255,0.9)';
+            const plx = (plateRect.left - rect.left) * scaleX;
+            const ply = (plateRect.top - rect.top) * scaleY;
+            const plw = plateRect.width * scaleX;
+            const plh = plateRect.height * scaleY;
+            this.ctx.strokeRect(Math.round(plx), Math.round(ply), Math.round(plw), Math.round(plh));
+        }
+        // 顾客判定矩形
+        (this.gameState.customers || []).forEach(c => {
+            const x = Math.round(c.x), y = Math.round(c.y);
+            const w = Math.round(c.width || 180), h = Math.round(c.height || 360);
+            this.ctx.strokeStyle = 'rgba(255,128,0,0.9)';
+            this.ctx.lineWidth = 2;
+            this.ctx.strokeRect(x, y, w, h);
+        });
+        this.ctx.restore();
     }
 
     serveToCustomer(customer, draggedItem) {
@@ -6386,9 +7172,14 @@ class BreakfastShop2D {
         plateItems.innerHTML = '';
         
         if (this.gameState.currentPlate.length === 0) {
-            plateBase.style.display = 'block';
-            // 移除整个餐盘的拖拽功能
+            // 空餐盘也显示 canpan，并隐藏提示文本
+            plateBase.style.display = 'none';
             if (currentPlate) {
+                currentPlate.style.position = 'relative';
+                currentPlate.style.backgroundImage = "url('images/canpan.png')";
+                currentPlate.style.backgroundRepeat = 'no-repeat';
+                currentPlate.style.backgroundSize = 'contain';
+                currentPlate.style.backgroundPosition = 'center 70%';
                 currentPlate.draggable = false;
                 currentPlate.style.cursor = 'default';
             }
@@ -6396,41 +7187,58 @@ class BreakfastShop2D {
         }
         
         plateBase.style.display = 'none';
-
-        // 为整个餐盘添加拖拽功能
+        // 使用 canpan 作为底图，放在 kuang2 的中间偏下位置（背景定位使用 y 偏下）
         if (currentPlate) {
-            currentPlate.draggable = true;
-            currentPlate.style.cursor = 'grab';
-            
-            // 移除之前的事件监听器
-            currentPlate.removeEventListener('pointerdown', this.plateMouseDownHandler);
-            
-            // 添加新的事件监听器
-            this.plateMouseDownHandler = (e) => {
-                if (e.target === currentPlate || e.target.closest('#currentPlate')) {
-                    this.startWholePlateDrag(e);
-                }
-            };
-            currentPlate.addEventListener('pointerdown', this.plateMouseDownHandler);
+            currentPlate.style.position = 'relative';
+            currentPlate.style.backgroundImage = "url('images/canpan.png')";
+            currentPlate.style.backgroundRepeat = 'no-repeat';
+            currentPlate.style.backgroundSize = 'contain';
+            currentPlate.style.backgroundPosition = 'center 70%';
         }
 
-        this.gameState.currentPlate.forEach((food, index) => {
-            const item = document.createElement('div');
-            item.className = 'plate-item';
-            item.textContent = this.getFoodIcon(food);
-            item.dataset.foodId = index;
-            
-            // 圆形排列
-            const angle = (index / this.gameState.currentPlate.length) * 2 * Math.PI;
-            const radius = 40;
-            const x = Math.cos(angle) * radius;
-            const y = Math.sin(angle) * radius;
-            
-            item.style.left = `calc(50% + ${x}px)`;
-            item.style.top = `calc(50% + ${y}px)`;
-            item.style.transform = 'translate(-50%, -50%)';
-            
-            plateItems.appendChild(item);
+        // 删除餐盘拖拽：不再绑定任何拖拽入口
+        if (currentPlate) {
+            currentPlate.draggable = false;
+            currentPlate.style.cursor = 'default';
+        }
+
+        // 统一缩放：根据 currentPlate 宽度计算缩放，canpan 与物品保持一致
+        const baseWidth = 200; // 以 200px 作为基准
+        const plateWidth = currentPlate ? currentPlate.clientWidth || baseWidth : baseWidth;
+        const scale = plateWidth / baseWidth;
+
+        // 在中间偏下的位置按行排列物品
+        plateItems.style.position = 'absolute';
+        plateItems.style.left = '0';
+        plateItems.style.top = '0';
+        plateItems.style.width = '100%';
+        plateItems.style.height = '100%';
+        plateItems.style.pointerEvents = 'none';
+
+        const icons = this.gameState.currentPlate.map((food) => {
+            if (food.type === 'youtiao') return { src: this.youtiao0Image ? this.youtiao0Image.src : 'images/youtiao0.png' };
+            if (food.type === 'doujiang') return { src: this.doujiang0Image ? this.doujiang0Image.src : 'images/doujiang0.png' };
+            return null; // 其他类型暂不显示
+        }).filter(Boolean);
+
+        const itemSize = Math.max(24, Math.floor(56 * scale));
+        const gap = 0; // 不留间隙
+        const totalWidth = icons.length * itemSize + Math.max(0, icons.length - 1) * gap;
+        const startX = (plateWidth - totalWidth) / 2;
+        const centerYOffset = Math.floor((currentPlate ? currentPlate.clientHeight : baseWidth) * 0.66); // 更靠下
+
+        icons.forEach((icon, idx) => {
+            const img = document.createElement('img');
+            img.src = icon.src;
+            img.style.position = 'absolute';
+            img.style.width = itemSize + 'px';
+            img.style.height = itemSize + 'px';
+            img.style.left = Math.round(startX + idx * (itemSize + gap)) + 'px';
+            img.style.top = Math.round(centerYOffset) + 'px';
+            img.style.transform = 'translateY(-50%)';
+            img.style.imageRendering = 'pixelated';
+            img.draggable = false;
+            plateItems.appendChild(img);
         });
     }
 
@@ -6743,46 +7551,27 @@ class BreakfastShop2D {
             const highlightHeight = youtiaoImage && youtiaoImage.complete ? 
                 youtiaoImage.height * this.backgroundScaleY + 4 : 24;
             
-            // 🎯 所有油条都显示新的收集提示
-            this.ctx.fillStyle = '#FFF';
-            this.ctx.font = '10px Arial';
-            this.ctx.fillText('拖动收集', pos.x + 15, (pos.y - 10) + 45);
+            // 隐藏“拖动收集”等提示文本，避免出现框感
             
             if (youtiao.overcooked) {
                 this.ctx.fillStyle = '#FF0000';
                 this.ctx.font = '12px Arial';
                 this.ctx.fillText('过火!', pos.x + 10, (pos.y - 10) - 5);
                 
-                // 过火油条用红色边框
-                this.ctx.strokeStyle = '#FF4444';
-                this.ctx.lineWidth = 3;
-                this.ctx.setLineDash([6, 2]);
-                this.ctx.strokeRect(pos.x - 2, pos.y - 2, highlightWidth, highlightHeight);
-                this.ctx.setLineDash([]);
-                this.ctx.lineWidth = 2;
+                // 隐藏边框
             } else if (youtiao.isCooked) {
                 if (youtiao.perfectTiming) {
                     this.ctx.fillStyle = '#00FF00';
                     this.ctx.font = '12px Arial';
                     this.ctx.fillText('完美!', pos.x + 10, pos.y - 5);
                     
-                    // 完美油条用金色边框
-                    this.ctx.strokeStyle = '#FFD700';
-                    this.ctx.lineWidth = 3;
-                    this.ctx.setLineDash([4, 4]);
-                    this.ctx.strokeRect(pos.x - 2, pos.y - 2, highlightWidth, highlightHeight);
-                    this.ctx.setLineDash([]);
+                    // 隐藏边框
                 } else {
                     this.ctx.fillStyle = '#FFA500';
                     this.ctx.font = '12px Arial';
                     this.ctx.fillText('已熟', pos.x + 10, pos.y - 5);
                     
-                    // 普通熟透油条用橙色边框
-                    this.ctx.strokeStyle = '#FFA500';
-                    this.ctx.lineWidth = 2;
-                    this.ctx.setLineDash([4, 4]);
-                    this.ctx.strokeRect(pos.x - 2, pos.y - 2, highlightWidth, highlightHeight);
-                    this.ctx.setLineDash([]);
+                    // 隐藏边框
                 }
                 this.ctx.lineWidth = 2;
             } else {
@@ -6792,13 +7581,7 @@ class BreakfastShop2D {
                 this.ctx.font = '10px Arial';
                 this.ctx.fillText(`${progressPercent}%`, pos.x + 10, (pos.y - 10) - 5);
                 
-                // 未熟油条用白色虚线边框表示可拖拽但未达最佳状态
-                this.ctx.strokeStyle = '#CCCCCC';
-                this.ctx.lineWidth = 1;
-                this.ctx.setLineDash([2, 2]);
-                this.ctx.strokeRect(pos.x - 2, (pos.y - 10) - 2, highlightWidth, highlightHeight);
-                this.ctx.setLineDash([]);
-                this.ctx.lineWidth = 2;
+                // 隐藏边框
             }
             
                          // 🎯 显示油条判定区域为绿色方块
@@ -7044,26 +7827,15 @@ class BreakfastShop2D {
                 
                 this.ctx.drawImage(currentImage, cupX, cupY, imageWidth, imageHeight);
 
-                // 🎯 若该碗正在倒豆浆，右上角显示 hu 图标，左边缘对齐碗的中线
-                // 始终在豆浆区显示 hu 提示（可见性增强）
-                const huX = cupX + imageWidth / 2;
-                const huY = cupY - 12;
-                if (this.huImage && this.huImage.complete) {
-                    const huW = this.huImage.width * this.backgroundScaleX * 0.6;
-                    const huH = this.huImage.height * this.backgroundScaleY * 0.6;
-                    this.ctx.drawImage(this.huImage, Math.round(huX), Math.round(huY - huH), Math.round(huW), Math.round(huH));
-                } else {
-                    this.ctx.fillStyle = '#FFD700';
-                    this.ctx.font = 'bold 16px Arial';
-                    this.ctx.fillText('hu', Math.round(huX), Math.round(huY));
-                }
+                // 倒豆浆时切换壶为 hu 的表现（仅用于状态表现，不直接绘制到碗上）
+                // 实际壶绘制在后面的 hu2/hu 渲染处
                 
                 // 恢复默认渲染设置
                 this.ctx.imageSmoothingEnabled = true;
             } else {
-                // 🎯 素材未加载时提示
+                // 🎯 素材未加载时提示，但不影响后续渲染壶
                 console.warn(`豆浆碗图片 doujiang${level} 未正确加载`);
-                return; // 跳过此次绘制
+                continue; // 仅跳过该碗，继续后续绘制
             }
             
             // 制作完成效果
@@ -7086,7 +7858,7 @@ class BreakfastShop2D {
             // 显示进度百分比
             this.ctx.fillStyle = '#333';
             this.ctx.font = '12px Arial';
-            this.ctx.fillText(`${Math.floor(item.progress * 100)}%`, cupX, cupY + 50);
+            this.ctx.fillText(`${Math.floor(item.progress * 100)}%`, cupX + 10, cupY + 50);
             
             // 🎯 显示豆浆碗绿色方框，贴合图片显示
             if (false && currentImage && currentImage.complete) { // 禁用豆浆碗绿色方框显示
@@ -7108,6 +7880,47 @@ class BreakfastShop2D {
         
         // 🎯 渲染wandui（碗堆），用于添加新的空碗（始终显示）
             this.renderWandui();
+
+        // 🎯 在豆浆视图右侧上方渲染壶：未选中显示 hu2，选中时跟随鼠标；长按碗时显示 hu 的形态
+        if (this.gameState.currentView === 'doujiang') {
+            const tablePos = this.getDoujiangzhuoPosition();
+            const assetScale = 0.8; // 略微放大
+            const selected = !!this.gameState.doujiangState.kettleSelected;
+            const usingHu = selected && this.gameState.cookingItems.some(it => it.type==='doujiang' && it.isPourHeld);
+            const img = usingHu ? this.huImage : this.hu2Image;
+            if (img && (img.complete || img.width > 0)) {
+                const w = img.width * this.backgroundScaleX * assetScale;
+                const h = img.height * this.backgroundScaleY * assetScale;
+                // 将未选中时的壶位置整体左移、下移
+                const baseX = tablePos.x + tablePos.width - 200;
+                const baseY = tablePos.y - h + 80;
+                const clampedBaseX = Math.min(baseX, this.canvas.width - w - 2);
+                const clampedBaseY = Math.max(5, baseY);
+                // 选中时：壶以“左侧边缘的中心点”跟随鼠标 → x 为左边缘，y 为中心
+                const drawX = selected ? (this.gameState.doujiangState.kettleX) : clampedBaseX;
+                const drawY = selected ? (this.gameState.doujiangState.kettleY - h / 2) : clampedBaseY;
+                // 像素完美渲染
+                this.ctx.imageSmoothingEnabled = false;
+                this.ctx.drawImage(img, Math.round(drawX), Math.round(drawY), Math.round(w), Math.round(h));
+                this.ctx.imageSmoothingEnabled = true;
+                this._hu2RenderBounds = { x: drawX, y: drawY, w, h };
+
+                // 隐藏判定虚线框（调试用代码取消）
+            } else {
+                // 备用绘制：用简单矩形标记壶位置，确保可见
+                const w = 60 * this.backgroundScaleX * assetScale;
+                const h = 40 * this.backgroundScaleY * assetScale;
+                const baseX = tablePos.x + tablePos.width - 200;
+                const baseY = tablePos.y - h + 80;
+                const clampedBaseX = Math.min(baseX, this.canvas.width - w - 2);
+                const clampedBaseY = Math.max(5, baseY);
+                const drawX = selected ? (this.gameState.doujiangState.kettleX) : clampedBaseX;
+                const drawY = selected ? (this.gameState.doujiangState.kettleY - h / 2) : clampedBaseY;
+                this.ctx.fillStyle = '#FDD835';
+                this.ctx.fillRect(Math.round(drawX), Math.round(drawY), Math.round(w), Math.round(h));
+                this._hu2RenderBounds = { x: drawX, y: drawY, w, h };
+            }
+        }
     }
 
     // 🎯 渲染wandui（碗堆）
@@ -7161,6 +7974,8 @@ class BreakfastShop2D {
         this.ctx.fillStyle = '#333';
         this.ctx.font = 'bold 12px Arial';
         this.ctx.fillText('点击添加碗', wanduiX, wanduiY - 5);
+
+        // 隐藏wandui的调试判定框
     }
 
     renderCongeeEffects() {
@@ -7173,6 +7988,25 @@ class BreakfastShop2D {
         
         // 🎯 高亮当前可点击的元素
         this.renderCongeeHighlights();
+
+        // 🎯 若正在拖拽某个配菜，渲染对应“小勺覆盖图”跟随鼠标
+        const cs = this.gameState.congeeState;
+        if (cs && cs.draggingSideActive && cs.draggingSideName) {
+            const overlayMap = {
+                '咸菜': this.xiancai1Image,
+                '黄豆': this.huangdou1Image,
+                '咸蛋': this.xiandan1Image,
+                '豆腐': this.doufu1Image
+            };
+            const img = overlayMap[cs.draggingSideName];
+            if (img && (img.complete || img.width > 0)) {
+                const size = 120;
+                const dx = Math.round(cs.draggingSideX - size / 2);
+                const dy = Math.round(cs.draggingSideY - size / 2);
+                this.ctx.imageSmoothingEnabled = false;
+                this.ctx.drawImage(img, dx, dy, size, size);
+            }
+        }
         
         // 🎯 渲染完成的粥（可拖拽）- 已移除浅黄色方块代指
         // this.renderCompletedCongee();
@@ -7182,28 +8016,36 @@ class BreakfastShop2D {
             this.renderCongeeInProgress();
         }
 
-        // 在豆浆视图底部渲染 hu2 并支持选中后跟随鼠标（始终可见）
+        // 在豆浆视图右侧上方渲染壶：未选中显示 hu2，选中时跟随鼠标；长按碗时显示 hu 的形态
         if (this.gameState.currentView === 'doujiang') {
             const tablePos = this.getDoujiangzhuoPosition();
             const assetScale = 0.7;
-            const baseX = tablePos.x + 20;
-            const baseY = tablePos.y + tablePos.height - 80; // 左下
-            const img = this.hu2Image && this.hu2Image.complete ? this.hu2Image : null;
-            if (img) {
+            const selected = !!this.gameState.doujiangState.kettleSelected;
+            const usingHu = selected && this.gameState.cookingItems.some(it => it.type==='doujiang' && it.isPourHeld);
+            const img = usingHu ? this.huImage : this.hu2Image;
+            if (img && (img.complete || img.width > 0)) {
                 const w = img.width * this.backgroundScaleX * assetScale;
                 const h = img.height * this.backgroundScaleY * assetScale;
-                // 若未选中，画在固定位置；选中则画在鼠标处
-                const drawX = this.gameState.doujiangState.kettleSelected ? (this.gameState.doujiangState.kettleX - w / 2) : baseX;
-                const drawY = this.gameState.doujiangState.kettleSelected ? (this.gameState.doujiangState.kettleY - h / 2) : baseY;
+                const baseX = tablePos.x + tablePos.width + 10;
+                const baseY = tablePos.y - h - 10;
+                const clampedBaseX = Math.min(baseX, this.canvas.width - w - 2);
+                const clampedBaseY = Math.max(5, baseY);
+                const drawX = selected ? (this.gameState.doujiangState.kettleX - w / 2) : clampedBaseX;
+                const drawY = selected ? (this.gameState.doujiangState.kettleY - h / 2) : clampedBaseY;
                 this.ctx.drawImage(img, Math.round(drawX), Math.round(drawY), Math.round(w), Math.round(h));
-                // 保存用于点击检测
                 this._hu2RenderBounds = { x: drawX, y: drawY, w, h };
             } else {
-                // 备用矩形提示（素材未加载时）
-                const w = 60, h = 40;
-                const drawX = baseX, drawY = baseY;
-                this.ctx.fillStyle = '#FFD700';
-                this.ctx.fillRect(drawX, drawY, w, h);
+                // 备用绘制：用简单矩形标记壶位置，确保可见
+                const w = 60 * this.backgroundScaleX * assetScale;
+                const h = 40 * this.backgroundScaleY * assetScale;
+                const baseX = tablePos.x + tablePos.width + 10;
+                const baseY = tablePos.y - h - 10;
+                const clampedBaseX = Math.min(baseX, this.canvas.width - w - 2);
+                const clampedBaseY = Math.max(5, baseY);
+                const drawX = selected ? (this.gameState.doujiangState.kettleX - w / 2) : clampedBaseX;
+                const drawY = selected ? (this.gameState.doujiangState.kettleY - h / 2) : clampedBaseY;
+                this.ctx.fillStyle = '#FDD835';
+                this.ctx.fillRect(Math.round(drawX), Math.round(drawY), Math.round(w), Math.round(h));
                 this._hu2RenderBounds = { x: drawX, y: drawY, w, h };
             }
         }
@@ -7211,32 +8053,8 @@ class BreakfastShop2D {
 
     // 🎯 显示制作步骤指示器
     renderCongeeStepIndicator() {
-        const step = this.gameState.congeeState.currentStep;
-        let text = '';
-        let color = '#2F4F4F';
-        
-        switch (step) {
-            case 'idle':
-                text = '1️⃣ 点击电饭煲开始制作';
-                color = '#FF6B6B';
-                break;
-            case 'dianfanbao_clicked':
-                text = '2️⃣ 点击粥开始制作粥底';
-                color = '#4ECDC4';
-                break;
-            case 'zhou_ready':
-                text = '3️⃣ 点击配菜进行选择';
-                color = '#45B7D1';
-                break;
-            case 'selecting_sides':
-                text = '4️⃣ 继续选择配菜或点击粥完成';
-                color = '#96CEB4';
-                break;
-        }
-        
-        this.ctx.fillStyle = color;
-        this.ctx.font = 'bold 24px Arial';
-        this.ctx.fillText(text, 50, 50);
+        // 教程文字已移除
+        return;
     }
 
     // 🎯 高亮当前可点击的元素
@@ -7335,8 +8153,7 @@ class BreakfastShop2D {
             timePhase: document.getElementById('timePhase'),
             dayCount: document.getElementById('dayCount'),
             customerCount: document.getElementById('customerCount'),
-            timeLeft: document.getElementById('timeLeft'),
-            orderList: document.getElementById('orderList')
+            timeLeft: document.getElementById('timeLeft')
         };
         
         if (elements.money) {
@@ -7401,7 +8218,7 @@ class BreakfastShop2D {
 
     handleVegetableClick(x, y) {
         if (!this.gameState.congeeState.isPreparingCongee) {
-            this.showNotification('请先点击粥锅开始制作');
+            // 移除提示：请先点击粥锅开始制作
             return;
         }
 
@@ -7465,7 +8282,7 @@ class BreakfastShop2D {
         };
 
         this.updateCompletedFoodArea();
-        this.showNotification('粥配菜制作完成！已放入成品槽');
+        // 移除提示：粥配菜制作完成！已放入成品槽
     }
 
     startYoutiaoPreparation() {
@@ -7650,8 +8467,8 @@ class BreakfastShop2D {
         
         // 🎯 与renderYoutiaoEffects中positions计算完全一致
         const positions = [];
-        const startX = oilPotX + oilPotWidth * 0.28 + 2 - 20; // 整体往右移动，然后往左移动20px
-        const startY = oilPotY + oilPotHeight * 0.06; // 再往上移动一点点
+        const startX = oilPotX + oilPotWidth * 0.28 + 2 - 20; // 保持与渲染一致
+        const startY = oilPotY + oilPotHeight * 0.06; // 保持与渲染一致
         const spacingX = oilPotWidth * 0.15; // 保持当前间距不变
         
         // 🎯 动态生成位置，支持更多油条
@@ -7693,15 +8510,12 @@ class BreakfastShop2D {
             const imageWidth = youtiaoImage.width * this.backgroundScaleX;
             const imageHeight = youtiaoImage.height * this.backgroundScaleY;
             
-            // 🎯 判定区域位置移到白色虚线框位置
-            const highlightWidth = youtiaoImage && youtiaoImage.complete ? 
-                youtiaoImage.width * this.backgroundScaleX + 4 : 84;
-            const highlightHeight = youtiaoImage && youtiaoImage.complete ? 
-                youtiaoImage.height * this.backgroundScaleY + 4 : 24;
-            const clickBoxLeft = pos.x - 2;
-            const clickBoxRight = pos.x - 2 + highlightWidth;
-            const clickBoxTop = (pos.y - 10) - 2;
-            const clickBoxBottom = (pos.y - 10) - 2 + highlightHeight;
+            // 🎯 判定区域与渲染位置严格一致，并加入容差
+            const tolerance = 6; // 提高点击容忍度
+            const clickBoxLeft = pos.x - tolerance;
+            const clickBoxRight = pos.x + imageWidth + tolerance;
+            const clickBoxTop = pos.y - tolerance;
+            const clickBoxBottom = pos.y + imageHeight + tolerance;
             
             // 调试信息
             console.log(`🔍 油条${i+1} 图片判定区域: [${clickBoxLeft.toFixed(1)}, ${clickBoxRight.toFixed(1)}, ${clickBoxTop.toFixed(1)}, ${clickBoxBottom.toFixed(1)}], 点击位置: [${x.toFixed(1)}, ${y.toFixed(1)}]`);
@@ -7845,6 +8659,21 @@ class BreakfastShop2D {
             this.showNotification('油锅已满！最多同时炸4根油条');
             return;
         }
+        // 仅允许在mian3（ready_to_fry 或 frying）阶段开始拖拽
+        const stepNow = this.gameState.youtiaoState.currentStep;
+        const allow = (stepNow === 'ready_to_fry' || stepNow === 'frying');
+        if (!allow) {
+            // 防御：彻底避免误生成面团条
+            document.querySelectorAll('.dragging').forEach(el => { try { el.remove(); } catch(_){} });
+            this.showNotification('面团尚未到mian3，不能下锅', 1000);
+            return;
+        }
+        // 如果当前可视状态不是 mian3（ready_to_fry 或 frying），则删除所有现存的面团条拖拽元素
+        const step = this.gameState.youtiaoState.currentStep;
+        const isMian3 = (step === 'ready_to_fry' || step === 'frying');
+        if (!isMian3) {
+            document.querySelectorAll('.dragging').forEach(el => { try { el.remove(); } catch(_){} });
+        }
 
         // 🎯 设置拖拽状态（类似油条拖拽）
         this.dragState.isDragging = true;
@@ -7853,13 +8682,13 @@ class BreakfastShop2D {
             data: 'dough'
         };
         
-        // 🎯 获取面团条图片尺寸（进一步放大一点）
-        let dragWidth = 90, dragHeight = 60; // 默认更大
+        // 🎯 获取面团条图片尺寸（回归较小的像素风尺寸）
+        let dragWidth = 60, dragHeight = 40; // 更接近原始像素
         
         if (this.miantuantiaoImage && this.miantuantiaoImage.complete && this.backgroundScaleX && this.backgroundScaleY) {
-            // 使用与其他素材一致的缩放比例，并在基础上放大 1.1 倍
-            dragWidth = Math.min(this.miantuantiaoImage.width * this.backgroundScaleX * 1.1, 140);
-            dragHeight = Math.min(this.miantuantiaoImage.height * this.backgroundScaleY * 1.1, 84);
+            // 使用与其他素材一致的缩放比例，避免过大
+            dragWidth = Math.min(this.miantuantiaoImage.width * this.backgroundScaleX, 110);
+            dragHeight = Math.min(this.miantuantiaoImage.height * this.backgroundScaleY, 70);
         }
 
         // 🎯 创建拖拽的视觉元素（使用miantuantiao图片）
@@ -7893,14 +8722,14 @@ class BreakfastShop2D {
         
         dragElement.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
         
-        // 🎯 修正坐标转换 - x,y已经是canvas内的坐标，需要转换为屏幕坐标
+        // 🎯 修正坐标转换 - x,y是canvas坐标，换算为屏幕坐标
         const rect = this.canvas.getBoundingClientRect();
         const scaleX = rect.width / this.canvas.width;
         const scaleY = rect.height / this.canvas.height;
         const screenX = rect.left + x * scaleX;
         const screenY = rect.top + y * scaleY;
         
-        // 🎯 使用 transform 居中并跟随（更顺滑，GPU 加速）
+        // 🎯 使用 transform 居中并跟随（更顺滑，GPU 加速），避免出现“莫名其妙的面团条”偏移
         dragElement.style.left = '0px';
         dragElement.style.top = '0px';
         dragElement.style.transform = `translate(-50%, -50%) translate3d(${Math.round(screenX)}px, ${Math.round(screenY)}px, 0)`;
@@ -7982,18 +8811,22 @@ class BreakfastShop2D {
         }
     }
 
-    startYoutiaoLinking(youtiao, index, x, y) {
+    startYoutiaoLinking(youtiao, index, x, y, options = {}) {
         // 设置拖拽状态
         this.dragState.isDragging = true;
         this.dragState.draggedItem = { 
             type: 'youtiao_from_oil',
             youtiao: youtiao,
-            index: index
+            index: index,
+            onlyBucket: !!options.onlyBucket
         };
         
-        // 根据油条状态获取对应的图片尺寸
+        // 根据油条状态获取对应的图片尺寸（选择当前形态）
         const progress = youtiao.cookProgress || 0;
         let youtiaoImageIndex = 1;
+        if (options.forceImageIndex) {
+            youtiaoImageIndex = options.forceImageIndex; // 强制指定形态
+        } else {
         if (youtiao.overcooked) {
             // 过熟：允许显示到 5/6
             if (progress > 1.0) youtiaoImageIndex = 6; else youtiaoImageIndex = 5;
@@ -8006,14 +8839,15 @@ class BreakfastShop2D {
             if (progress > 0.3) youtiaoImageIndex = 3;
             if (progress > 0.5) youtiaoImageIndex = 4;
         }
+        }
         
         const youtiaoImage = this[`youtiao1_${youtiaoImageIndex}Image`];
-        let dragWidth = 110, dragHeight = 28; // 默认更大
-        
+        // 使用“缩小”的当前形态（比如 60% 尺寸）
+        const scaleFactor = 0.6;
+        let dragWidth = 90, dragHeight = 24; // 默认值
         if (youtiaoImage && youtiaoImage.complete && this.backgroundScaleX && this.backgroundScaleY) {
-            // 使用与其他素材一致的缩放比例，保持长宽比
-            dragWidth = Math.min(youtiaoImage.width * this.backgroundScaleX * 1.1, 150);
-            dragHeight = Math.min(youtiaoImage.height * this.backgroundScaleY * 1.1, 40);
+            dragWidth = youtiaoImage.width * this.backgroundScaleX * scaleFactor;
+            dragHeight = youtiaoImage.height * this.backgroundScaleY * scaleFactor;
         }
         
         // 创建拖拽的视觉元素
@@ -8023,10 +8857,20 @@ class BreakfastShop2D {
         dragElement.style.zIndex = '9999';
         dragElement.style.width = dragWidth + 'px';
         dragElement.style.height = dragHeight + 'px';
+        // 用当前形态的油条图片作为背景，像素化显示
+        if (youtiaoImage && youtiaoImage.complete) {
+            dragElement.style.backgroundImage = `url(${youtiaoImage.src})`;
+            dragElement.style.backgroundSize = 'contain';
+            dragElement.style.backgroundRepeat = 'no-repeat';
+            dragElement.style.backgroundPosition = 'center';
+            dragElement.style.imageRendering = 'pixelated';
+        } else {
+            // 兜底：保持与之前类似的占位样式
         dragElement.style.backgroundColor = '#FFA500';
         dragElement.style.border = '2px solid #8B4513';
         dragElement.style.borderRadius = '8px';
         dragElement.style.boxShadow = '0 4px 8px rgba(0,0,0,0.3)';
+        }
         
         // 修正坐标转换 - x,y已经是canvas内的坐标，需要转换为屏幕坐标
         const rect = this.canvas.getBoundingClientRect();
@@ -8041,27 +8885,43 @@ class BreakfastShop2D {
         dragElement.style.transform = `translate(-50%, -50%) translate3d(${Math.round(screenX)}px, ${Math.round(screenY)}px, 0)`;
         dragElement.style.willChange = 'transform';
         dragElement.classList.add('dragging');
-        dragElement.textContent = `🥖${index + 1}`;
-        dragElement.style.textAlign = 'center';
-        dragElement.style.lineHeight = dragHeight + 'px';
-        dragElement.style.fontSize = '14px';
-        dragElement.style.fontWeight = 'bold';
-        dragElement.style.color = '#FFF';
-        dragElement.style.textShadow = '1px 1px 2px rgba(0,0,0,0.7)';
         
         document.body.appendChild(dragElement);
         this.dragState.draggedElement = dragElement;
         
-        // 根据油条质量显示不同提示
-        let qualityText = '';
-        if (youtiao.perfectTiming) {
-            qualityText = '完美品质';
-        } else if (youtiao.overcooked) {
-            qualityText = '过火品质';
+        // 采用与面团拖拽一致的跟随一致性校正机制（RAF），确保跨画布/窗口时也能紧贴鼠标
+        const ensureFollow = () => {
+            if (!this.dragState.isDragging || !this.dragState.draggedElement) {
+                this.dragState.followRafId = null;
+                return;
+            }
+            const ex = this.dragState.pointerScreenX;
+            const ey = this.dragState.pointerScreenY;
+            if (typeof ex === 'number' && typeof ey === 'number') {
+                const rect = this.dragState.draggedElement.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                const dx = Math.abs(centerX - ex);
+                const dy = Math.abs(centerY - ey);
+                if (dx > 2 || dy > 2) {
+                    this.dragState.draggedElement.style.transform = `translate(-50%, -50%) translate3d(${Math.round(ex)}px, ${Math.round(ey)}px, 0)`;
+                }
+            }
+            this.dragState.followRafId = requestAnimationFrame(ensureFollow);
+        };
+        if (this.dragState.followRafId) cancelAnimationFrame(this.dragState.followRafId);
+        this.dragState.followRafId = requestAnimationFrame(ensureFollow);
+        
+        // 根据模式提示
+        if (options.onlyBucket) {
+            this.showNotification(`拖拽第${index + 1}根油条到收集桶`);
         } else {
-            qualityText = '普通品质';
+            let qualityText = '';
+            if (youtiao.perfectTiming) qualityText = '完美品质';
+            else if (youtiao.overcooked) qualityText = '过火品质';
+            else qualityText = '普通品质';
+            this.showNotification(`拖拽第${index + 1}根油条(${qualityText})到顾客处或餐盘上`);
         }
-        this.showNotification(`拖拽第${index + 1}根油条(${qualityText})到顾客处或餐盘上`);
     }
 
     // 🎯 检测bucket中待放置油条的点击
@@ -8546,24 +9406,27 @@ class BreakfastShop2D {
 
     updateTime(deltaTime) {
         if (!this.gameState.isRunning || this.gameState.isPaused) return;
+        // 卷帘门动画期间暂停倒计时
+        try {
+            const j = this.gameState.juanLianMenState;
+            if (j && (j.isAnimating || j.isVisible)) {
+                return;
+            }
+        } catch(_) {}
         
         // 启用按单量结束时，也增加超时判定：超过60秒强制结束
         if (this.config.useOrderTargetEnd) {
             this.timeLeft = Math.max(0, this.timeLeft - deltaTime / 1000);
-            // 以配置的 dayDuration 为上限
-            const limitMs = Math.max(0, (this.config && this.config.dayDuration ? this.config.dayDuration : 60) * 1000);
-            if ((this._elapsedDayMs || 0) >= limitMs) {
-                this.triggerEndOfDayByOrders();
+            // 只按倒计时结束一天
+            if (this.timeLeft <= 0) {
+                this.endPhase();
                 return;
             }
-            this._elapsedDayMs = (this._elapsedDayMs || 0) + deltaTime;
             return;
         }
         
         this.timeLeft -= deltaTime / 1000;
-        if (this.timeLeft <= 0) {
-            this.endPhase();
-        }
+        if (this.timeLeft <= 0) { this.endPhase(); }
     }
 
     updateShopLevel() {
@@ -8788,6 +9651,7 @@ class BreakfastShop2D {
             // 🎯 在其他界面也显示标题和金钱（最上层）
             this.renderBiaoTi();
             this.renderMoneyDisplay();
+            this.renderWaitingCustomerIcons();
         } else if (this.gameState.currentView === 'doujiang') {
             if (this.sprites.doujiangWorkspace) {
                 this.ctx.drawImage(this.sprites.doujiangWorkspace, 0, 0);
@@ -8804,6 +9668,7 @@ class BreakfastShop2D {
             // 🎯 在其他界面也显示标题和金钱（最上层）
             this.renderBiaoTi();
             this.renderMoneyDisplay();
+            this.renderWaitingCustomerIcons();
         } else if (this.gameState.currentView === 'congee') {
             if (this.sprites.congeeWorkspace) {
                 this.ctx.drawImage(this.sprites.congeeWorkspace, 0, 0);
@@ -8820,6 +9685,24 @@ class BreakfastShop2D {
             // 🎯 在其他界面也显示标题和金钱（最上层）
             this.renderBiaoTi();
             this.renderMoneyDisplay();
+            this.renderWaitingCustomerIcons();
+
+            // 🎯 绘制fanshao跟随鼠标
+            try {
+                if (this.gameState.congeeState && this.gameState.congeeState.fanshaoFollowing) {
+                    const img = this.fanshaoImage && this.fanshaoImage.complete ? this.fanshaoImage : null;
+                    if (img) {
+                        const scale = 1.0; // 放大饭勺
+                        const w = img.width * this.backgroundScaleX * scale;
+                        const h = img.height * this.backgroundScaleY * scale;
+                        // 使用饭勺左下角对齐鼠标位置
+                        const x = (this.gameState.congeeState.fanshaoX || 0);
+                        const y = (this.gameState.congeeState.fanshaoY || 0) - h;
+                        this.ctx.imageSmoothingEnabled = false;
+                        this.ctx.drawImage(img, Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+                    }
+                }
+            } catch (_) {}
         }
         
         this.updateUI();
@@ -8894,6 +9777,115 @@ class BreakfastShop2D {
 
             this.ctx.drawImage(img, drawX, drawY, drawW, drawH);
             
+            // 订单图形气泡：背景保持与未接单一致（qipao），仅内部内容变化
+            if (customer.hasOrdered && customer.order && Array.isArray(customer.order.items) && customer.order.items.length > 0) {
+                try {
+                    const bubbleW = Math.max(56, Math.round(drawW * 0.5)) * 3;
+                    const bubbleH = Math.max(40, Math.round(drawH * 0.18)) * 3;
+                    const bubbleX = Math.round(drawX + drawW / 2 - bubbleW / 2);
+                    const bubbleY = Math.round(drawY - bubbleH - 8);
+
+                    // 使用与未接单一致的 qipao.png 作为背景
+                    const ctx = this.ctx;
+                    const wooImg = (this.wooImage && this.wooImage.complete) ? this.wooImage : null;
+                    ctx.save();
+                    ctx.imageSmoothingEnabled = false;
+                    ctx.shadowColor = 'transparent';
+                    ctx.shadowBlur = 0;
+                    ctx.lineWidth = 0;
+                    ctx.globalCompositeOperation = 'source-over';
+                    // 不要清除局部区域，否则会把已绘制的背景擦成透明，呈现为黑框
+                    if (wooImg) {
+                        ctx.drawImage(wooImg, bubbleX, bubbleY, bubbleW, bubbleH);
+                    } else {
+                        // 兜底：纯色圆角气泡（黄色），避免出现黑框
+                        this.roundRect(ctx, bubbleX, bubbleY, bubbleW, bubbleH, 10, '#FFD54F', null);
+                    }
+                    ctx.restore();
+
+                    // 在气泡右下角渲染交餐按钮
+                    const btnW = Math.max(60, Math.round(bubbleW * 0.22));
+                    const btnH = Math.max(26, Math.round(bubbleH * 0.18));
+                    const btnX = bubbleX + bubbleW - btnW - 6;
+                    const btnY = bubbleY + bubbleH - btnH - 6;
+                    ctx.save();
+                    // 暗橙色圆角矩形底 + 深红色描边 + 白字
+                    this.roundRect(ctx, btnX, btnY, btnW, btnH, 8, '#CC7A00', '#8B0000');
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.font = 'bold 14px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('交餐', btnX + Math.round(btnW/2), btnY + Math.round(btnH/2));
+                    ctx.restore();
+                    // 记录按钮区域供点击命中
+                    customer._deliverBtn = { x: btnX, y: btnY, w: btnW, h: btnH };
+
+                    // 渲染油条/豆浆（单行）
+                    const flatIcons = [];
+                    customer.order.items.forEach(item => {
+                        const count = Math.min(12, item.quantity);
+                        for (let i = 0; i < count; i++) flatIcons.push(item.type);
+                    });
+                    const count = flatIcons.length;
+                    const iconsPerRow = Math.max(4, count);
+                    const thumbSize = Math.floor((bubbleW - 10) / iconsPerRow);
+                    const rowY = Math.round(bubbleY + 6);
+                    // 自动补位：仅在图标成功绘制时递增列索引，避免未就绪素材留下空槽
+                    let col = 0;
+                    for (let i = 0; i < count; i++) {
+                        const type = flatIcons[i];
+                        const img = type === 'youtiao' ? this.youtiao0Image : (type === 'doujiang' ? this.doujiang0Image : null);
+                        if (img && img.complete) {
+                            const x = bubbleX + 5 + col * thumbSize;
+                            // 将缩略图在槽位中缩小3px并居中
+                            const iconSize = Math.max(1, thumbSize - 3);
+                            const offset = Math.floor((thumbSize - iconSize) / 2);
+                            this.ctx.drawImage(img, x + offset, rowY + offset, iconSize, iconSize);
+                            col++;
+                        }
+                    }
+
+                    // 渲染 zhou0 与配菜0（紧贴下一行，一左一右）
+                    const congeeItem = Array.isArray(customer.order.items)
+                        ? customer.order.items.find(it => it.type === 'congee' && Array.isArray(it.sides) && it.sides.length > 0)
+                        : null;
+                    if (congeeItem) {
+                        const cellScale = 1.2;
+                        const cellSize = Math.round(thumbSize * cellScale);
+                        // 将 zhou0 的上沿抬至第一行图标的下沿位置
+                        const slotOffset = Math.floor((thumbSize - Math.max(1, thumbSize - 3)) / 2); // 与上面图标缩放的offset一致
+                        const nextRowY = rowY + slotOffset + Math.max(1, thumbSize - 3);
+                        // 使 zhou0 的左边缘与第一行缩略图的可见左边缘一致
+                        const leftX = bubbleX + 5 + slotOffset;
+                        // 放大 zhou0：在不超出气泡可用宽度的前提下增大显示尺寸
+                        const desiredZhouSize = Math.round(cellSize * 1.25); // 放大 25%
+                        const maxRowWidth = (bubbleW - 10); // 行内可用宽度估算
+                        let zhouSize = desiredZhouSize;
+                        // 若会与配菜方块（cellSize）相加后超出行宽，则收敛
+                        if (zhouSize + 2 + cellSize > maxRowWidth) {
+                            zhouSize = Math.max(cellSize, maxRowWidth - cellSize - 2);
+                        }
+                        const rightX = leftX + zhouSize + 2;
+                        const zImg = (this.zhou0Image && this.zhou0Image.complete) ? this.zhou0Image : null;
+                        const sideName = congeeItem.sides[0];
+                        const sideMap = { '咸菜': this.xiancai0Image, '黄豆': this.huangdou0Image, '咸蛋': this.xiandan0Image, '豆腐': this.doufu0Image };
+                        const sImg = sideMap[sideName];
+                        const drawContain = (img, cx, cy, size) => {
+                            if (!img || !img.complete) return;
+                            const ar = img.width / img.height;
+                            let w = size, h = Math.round(size / ar);
+                            if (h > size) { h = size; w = Math.round(size * ar); }
+                            const dx = cx + Math.round((size - w) / 2);
+                            const dy = cy + Math.round((size - h) / 2);
+                            this.ctx.drawImage(img, dx, dy, w, h);
+                        };
+                        // 为保证 zhou0 完整显示，使用 contain 策略；尺寸使用放大后的 zhouSize
+                        drawContain(zImg, leftX, nextRowY, zhouSize);
+                        drawContain(sImg, rightX, nextRowY, cellSize);
+                    }
+                } catch (_) {}
+            }
+            
             // 调试：显示顾客点击区域（半透明边框） - 已禁用
             if (false && customer.state === 'waiting' && !customer.hasOrdered) {
                 this.ctx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
@@ -8919,14 +9911,10 @@ class BreakfastShop2D {
                                    patienceRatio > 0.3 ? '#FFA500' : '#FF4444';
                 this.ctx.fillRect(barX, barY, barWidth * patienceRatio, barHeight);
                 
-                // 订单类型指示
-                this.ctx.fillStyle = customer.type === 'takeaway' ? '#2196F3' : '#FF9800';
-                this.ctx.font = 'bold 12px Arial';
-                this.ctx.fillText(customer.type === 'takeaway' ? '外带' : '堂食', 
-                                customer.x + 14, customer.y - 60); // 按3倍调整位置
+            // 订单类型指示移除（当前全部为堂食，不显示文字）
             }
             
-            // 可点击提示（使用woo素材替代原气泡，按顾客拉伸比例渲染）
+            // 可点击提示（使用qipao + youke图标）
             if (customer.state === 'waiting' && !customer.hasOrdered) {
                 // 降低调试频率，只在每秒打印一次
                 if (Math.floor(Date.now() / 1000) % 2 === 0) {
@@ -8944,11 +9932,12 @@ class BreakfastShop2D {
                     // 去除全局滤镜，改为进度条颜色体现紧迫度
                 }
                 
-                // 载入woo素材（若未加载则触发重试）
+                // 载入qipao素材（若未加载则触发重试）
                 const wooImg = this.wooImage && this.wooImage.complete ? this.wooImage : null;
                 if (!wooImg) {
                     this.retryLoadAsset('wooImage');
                 }
+                const youkeImg = this.youkeImage && this.youkeImage.complete ? this.youkeImage : null;
 
                 // 计算与guke相同的拉伸比例（使用顾客的判定宽高相对素材原始尺寸）
                 const gukeW = (customer.width && Number.isFinite(customer.width)) ? customer.width : 180;
@@ -8957,15 +9946,15 @@ class BreakfastShop2D {
                 const stretchX = gukeW / baseW;
                 const stretchY = gukeH / baseH;
 
-                // woo基准显示尺寸（保持原图高宽比），按guke的拉伸比例缩放
-                const wooBaseH = 54;   // 基准高度（用于整体缩放，保持小巧）
+                // qipao基准显示尺寸（保持原图高宽比），按guke的拉伸比例缩放
+                const wooBaseH = 54 * 3;   // 再放大到三倍
                 const aspect = wooImg ? (wooImg.width / wooImg.height) : (4 / 3);
                 const drawWooH = Math.round(wooBaseH * stretchY);
                 const drawWooW = Math.round(drawWooH * aspect);
 
-                // 位置关系如图：woo在guke头部右侧，略高一些且不重叠
-                let drawWooX = Math.round(customer.x + gukeW + 20); // 右移20px
-                let drawWooY = Math.round(customer.y + Math.round(gukeH * 0.08)); // 贴近头顶高度
+                // 位置：显示在顾客头顶（居中）
+                let drawWooX = Math.round(customer.x + gukeW / 2 - drawWooW / 2);
+                let drawWooY = Math.round(customer.y - drawWooH - Math.round(8 * stretchY));
 
                 // 若右侧越界，则回退到头顶右上（贴边）
                 if (drawWooX + drawWooW > this.canvas.width - 2) {
@@ -8981,9 +9970,27 @@ class BreakfastShop2D {
                 drawWooX = Math.max(pad, Math.min(drawWooX, this.canvas.width - drawWooW - pad));
                 drawWooY = Math.max(pad, Math.min(drawWooY, this.canvas.height - drawWooH - pad));
 
-                // 以woo图替代原气泡
+                // 绘制qipao
                 if (wooImg) {
                     this.ctx.drawImage(wooImg, drawWooX, drawWooY, drawWooW, drawWooH);
+                }
+                // 在气泡中绘制youke占位图标（保持长宽比，拉伸比例与qipao一致）
+                if (youkeImg) {
+                    const youkeAspect = (youkeImg.width && youkeImg.height) ? (youkeImg.width / youkeImg.height) : 1;
+                    const youkeBaseH = 40; // 基准高度
+                    let iconH = Math.round(youkeBaseH * stretchY); // 与qipao相同的拉伸比例（使用stretchY）
+                    // 约束在气泡内部的可用范围
+                    const maxH = Math.floor(drawWooH * 0.6);
+                    const maxW = Math.floor(drawWooW * 0.6);
+                    iconH = Math.min(iconH, maxH);
+                    let iconW = Math.round(iconH * youkeAspect);
+                    if (iconW > maxW) {
+                        iconW = maxW;
+                        iconH = Math.round(iconW / youkeAspect);
+                    }
+                    const iconX = Math.round(drawWooX + (drawWooW - iconW) / 2);
+                    const iconY = Math.round(drawWooY + (drawWooH - iconH) / 2) - 20; // 上移20px
+                    this.ctx.drawImage(youkeImg, iconX, iconY, iconW, iconH);
                 }
                 
                 // 倒计时进度条（从绿色→黄色→红色），放在guke正头顶居中
@@ -9025,12 +10032,14 @@ class BreakfastShop2D {
                 this.ctx.fillText('🍽️', customer.x + 135, customer.y + 45); // 按3倍调整位置
             }
             
-            // 显示顾客编号
-            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-            this.ctx.fillRect(customer.x + 5, customer.y - 35, 25, 20);
-            this.ctx.fillStyle = '#FFD700';
-            this.ctx.font = 'bold 14px Arial';
-            this.ctx.fillText(customer.id.toString(), customer.x + 17, customer.y - 20);
+            // 显示顾客编号（禁用，避免在气泡附近出现黑色块）
+            // if (this.debug) {
+            //     this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            //     this.ctx.fillRect(customer.x + 5, customer.y - 35, 25, 20);
+            //     this.ctx.fillStyle = '#FFD700';
+            //     this.ctx.font = 'bold 14px Arial';
+            //     this.ctx.fillText(customer.id.toString(), customer.x + 17, customer.y - 20);
+            // }
             
             this.ctx.restore();
         });
@@ -9113,6 +10122,22 @@ class BreakfastShop2D {
         // 绘制文字（纯白色无描边圆润字体）
         this.ctx.fillText(moneyText, textX, textY);
 
+        // 🎯 在营业时，在qian下方显示“距离下一天营业”的倒计时与当天数
+        if (this.gameState.isRunning) {
+            const countdownSec = Math.max(0, Math.ceil((this.timeLeft || 0)));
+            const tipFont = Math.max(12, Math.floor(fontSize * 0.5));
+            const tipX = qianX; // 与qian左对齐
+            const tipY = qianY + scaledQianHeight + tipFont + 4; // qian下方
+            // 倒计时
+            this.ctx.font = `bold ${tipFont}px Arial, sans-serif`;
+            this.ctx.fillStyle = '#FFD54F';
+            this.ctx.fillText(`下一天倒计时: ${countdownSec}s`, tipX, tipY);
+            // 天数（与倒计时相同字号，紧接其下）
+            const dayY = tipY + tipFont + 2;
+            const dayNum = this.gameState.day || 1;
+            this.ctx.fillText(`第 ${dayNum} 天`, tipX, dayY);
+        }
+
         // 恢复默认渲染设置
         this.ctx.imageSmoothingEnabled = true;
 
@@ -9124,6 +10149,38 @@ class BreakfastShop2D {
         if (this.sprites.front) {
             this.ctx.drawImage(this.sprites.front, 0, 0);
         }
+    }
+
+    // —— 顾客评价系统 ——
+    calculateReviewStars(customer, order, providedFood) {
+        // 基于满足度、上菜速度（等待时间）、准确度简化打分
+        try {
+            const satisfaction = Math.max(0, Math.min(100, customer.satisfaction ?? 100));
+            // 等待时长：从下单到完成
+            const waitedMs = order && order.createdAt ? (Date.now() - order.createdAt) : 0;
+            // 目标准确度：要求的类型与提供的类型重合比
+            const needTypes = (order.items || []).map(i => i.type);
+            const giveTypes = (providedFood || []).map(f => f.type);
+            const correct = giveTypes.filter(t => needTypes.includes(t)).length;
+            const accRatio = needTypes.length ? (correct / needTypes.length) : 1;
+            // 评分：满意度权重0.6，准确度0.3，速度0.1（<10s满分，>60s最低）
+            const speedScore = waitedMs <= 10000 ? 1 : waitedMs >= 60000 ? 0 : (1 - (waitedMs - 10000) / 50000);
+            const composite = 0.6 * (satisfaction / 100) + 0.3 * accRatio + 0.1 * speedScore;
+            const stars = Math.max(1, Math.min(5, Math.round(composite * 5)));
+            return stars;
+        } catch(_) { return 5; }
+    }
+
+    generateReviewText(stars, providedFood) {
+        const foods = (providedFood || []).map(f => this.getFoodName(f.type)).join('、') || '餐食';
+        const map = {
+            5: `太棒了！${foods}很好吃，服务很快！`,
+            4: `不错～${foods}味道很好，下次还来。`,
+            3: `还可以，${foods}中规中矩。`,
+            2: `有点慢，${foods}一般般。`,
+            1: `不太满意，${foods}体验一般。`
+        };
+        return map[stars] || '满意度记录';
     }
 
     // 🎯 渲染卷帘门
