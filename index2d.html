@@ -1161,12 +1161,12 @@
             alignRightPanels();
             });
         }
-        window.addEventListener('resize', applyFitScale);
-        window.addEventListener('orientationchange', applyFitScale);
+        window.addEventListener('resize', applyFitScale, { passive: true });
+        window.addEventListener('orientationchange', applyFitScale, { passive: true });
         if (window.visualViewport) {
-            visualViewport.addEventListener('resize', applyFitScale);
+            visualViewport.addEventListener('resize', applyFitScale, { passive: true });
         }
-        document.addEventListener('DOMContentLoaded', applyFitScale);
+        document.addEventListener('DOMContentLoaded', applyFitScale, { passive: true });
         window.addEventListener('load', () => setTimeout(alignRightPanels, 0));
 
         // 旧三框对齐逻辑移除：当前使用新两框布局，跟随容器自适应
@@ -1204,6 +1204,7 @@
                     'images/zhou.png','images/zhoucai.png','images/zhoucaizhuo.png','images/zhuye.png','images/fanshao.png'
                 ];
                 this.totalAssets = this.assetList.length;
+                this.started = false;
                 this.init();
             }
 
@@ -1277,7 +1278,10 @@
                 const shezhiBtn = document.getElementById('shezhiBtn');
                 const shuomingBtn = document.getElementById('shuomingBtn');
 
-                startGameBtn.addEventListener('click', () => {
+                const tryStart = (evt) => {
+                    if (evt) { evt.preventDefault(); evt.stopPropagation(); }
+                    if (this.started) return;
+                    this.started = true;
                     // 仅当素材就绪时才允许进入游戏（卷帘门与开始营业按钮）
                     if (this.assetsReady.juanlianmen && this.assetsReady.yingye) {
                         // 播放按钮音效（开始界面）
@@ -1288,9 +1292,24 @@
                         } catch (_) {}
                         this.startGame();
                     } else {
-                        alert('素材加载中，请稍候...');
+                        // 移动端兼容：即使关键素材未标记就绪也先进入，避免点击无响应
+                        // 在移动端 Safari 上，用户手势触发的音频播放需要立即执行
+                        // 若失败亦不阻塞进入游戏
+                        this.startGame();
                     }
-                });
+                };
+                startGameBtn.addEventListener('click', tryStart, { passive: false });
+                startGameBtn.addEventListener('touchstart', tryStart, { passive: false });
+                // 整个开始界面点击/触摸也可触发，改善移动端命中率
+                const startScreenEl = document.getElementById('startScreen');
+                if (startScreenEl) {
+                    startScreenEl.addEventListener('touchstart', tryStart, { passive: false });
+                    startScreenEl.addEventListener('click', (e) => {
+                        // 只在按钮可见时触发，避免误触其它区域
+                        const visible = document.getElementById('startButtons')?.style.display !== 'none';
+                        if (visible) tryStart(e);
+                    }, { passive: false });
+                }
 
                 // 设置按钮：进入游戏后打开设置（如果有）
                 shezhiBtn.addEventListener('click', () => {
